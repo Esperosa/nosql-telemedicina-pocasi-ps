@@ -103,3 +103,5 @@ Tento repozitář obsahuje kompletní vypracování semestrální práce dle ofi
   docker compose up -d
   docker compose run --rm check
   ```
+
+Repozitář projektu: https://github.com/Esperosa/nosql-telemedicina-pocasi-ps
