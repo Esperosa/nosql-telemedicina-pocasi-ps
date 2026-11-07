@@ -1,0 +1,13 @@
+server.name: kibana
+server.host: "0.0.0.0"
+elasticsearch.hosts: ["http://elasticsearch:9200"]
+
+# Autentizace ke clusteru
+elasticsearch.username: "kibana_system"
+
+# X-Pack konfigurace
+# Pozn.: xpack.security.enabled se v Kibaně 8+ NEDÁ nastavovat (je natvrdo
+# zapnuté, Kibana při startu spadne s "enabled status cannot be changed",
+# pokud se tahle volba v config souboru vůbec objeví) - proto tu chybí.
+telemetry.enabled: false
+newsfeed.enabled: false

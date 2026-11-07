@@ -1,0 +1,10 @@
+.env
+*.log
+__pycache__/
+.ipynb_checkpoints/
+
+# MongoDB internal authentication keyfile & secrets
+keyfile/
+*.key
+mongo-keyfile*
+secrets/

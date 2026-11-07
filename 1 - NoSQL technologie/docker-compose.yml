@@ -1,0 +1,288 @@
+# MongoDB sharded cluster podle minimální topologie ze zadání:
+# - 3 config servery jako replikační sada "cfgrs"
+# - 3 shardy, každý jako 3členná replikační sada ("shard1rs", "shard2rs", "shard3rs") - celkem 9 uzlů
+# - 1 mongos query router
+# - Interní autentizace clusteru pomocí sdíleného keyfile (generovaného službou key-init do volume)
+# - Řízení přístupu (RBAC) s root administrátorem a aplikačním uživatelem s omezenými právy
+# - Automatická inicializace, sharding databáze a idempotentní import datové sady
+
+services:
+  # Jednorázový generátor interního autentizačního klíče (keyfile)
+  key-init:
+    image: mongo:8.3.11
+    user: root
+    entrypoint:
+      - "bash"
+      - "-c"
+      - |
+        set -eu
+        mkdir -p /data/keyfile
+        if [ ! -f /data/keyfile/mongo.key ]; then
+          openssl rand -base64 756 > /data/keyfile/mongo.key
+          chmod 400 /data/keyfile/mongo.key
+          chown 999:999 /data/keyfile/mongo.key
+          echo "Interní cluster keyfile úspěšně vygenerován."
+        else
+          echo "Interní cluster keyfile již existuje."
+        fi
+    volumes:
+      - keyfile-data:/data/keyfile
+
+  # =========================================================================
+  # CONFIG SERVER REPLICA SET (cfgrs)
+  # =========================================================================
+  configsvr1:
+    image: mongo:8.3.11
+    command: ["mongod", "--configsvr", "--replSet", "cfgrs", "--port", "27019", "--bind_ip_all", "--keyFile", "/data/keyfile/mongo.key"]
+    volumes:
+      - configsvr1-data:/data/db
+      - keyfile-data:/data/keyfile:ro
+    depends_on:
+      key-init: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "27019", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  configsvr2:
+    image: mongo:8.3.11
+    command: ["mongod", "--configsvr", "--replSet", "cfgrs", "--port", "27019", "--bind_ip_all", "--keyFile", "/data/keyfile/mongo.key"]
+    volumes:
+      - configsvr2-data:/data/db
+      - keyfile-data:/data/keyfile:ro
+    depends_on:
+      key-init: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "27019", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  configsvr3:
+    image: mongo:8.3.11
+    command: ["mongod", "--configsvr", "--replSet", "cfgrs", "--port", "27019", "--bind_ip_all", "--keyFile", "/data/keyfile/mongo.key"]
+    volumes:
+      - configsvr3-data:/data/db
+      - keyfile-data:/data/keyfile:ro
+    depends_on:
+      key-init: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "27019", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  configsvr-init:
+    image: mongo:8.3.11
+    network_mode: "service:configsvr1"
+    depends_on:
+      configsvr1: { condition: service_healthy }
+      configsvr2: { condition: service_healthy }
+      configsvr3: { condition: service_healthy }
+    entrypoint: ["bash", "/scripts/init-configsvr.sh"]
+    volumes: ["./mongo-init:/scripts:ro"]
+    environment:
+      - MONGO_ROOT_USER=${MONGO_ROOT_USER:-admin}
+      - MONGO_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD:-ClusterSuperSecretAdminPassword2026!}
+      - MONGO_APP_USER=${MONGO_APP_USER:-telemed_app}
+      - MONGO_APP_PASSWORD=${MONGO_APP_PASSWORD:-AppSecureVitalPass2026!}
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-telemedicina}
+
+  # =========================================================================
+  # SHARD 1 REPLICA SET (shard1rs)
+  # =========================================================================
+  shard1a: &shard1
+    image: mongo:8.3.11
+    command: ["mongod", "--shardsvr", "--replSet", "shard1rs", "--port", "27018", "--bind_ip_all", "--keyFile", "/data/keyfile/mongo.key"]
+    volumes:
+      - shard1a-data:/data/db
+      - keyfile-data:/data/keyfile:ro
+    depends_on:
+      key-init: { condition: service_completed_successfully }
+    healthcheck: &shard-healthcheck
+      test: ["CMD", "mongosh", "--port", "27018", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  shard1b:
+    <<: *shard1
+    volumes:
+      - shard1b-data:/data/db
+      - keyfile-data:/data/keyfile:ro
+  shard1c:
+    <<: *shard1
+    volumes:
+      - shard1c-data:/data/db
+      - keyfile-data:/data/keyfile:ro
+
+  shard1-init:
+    image: mongo:8.3.11
+    network_mode: "service:shard1a"
+    depends_on:
+      shard1a: { condition: service_healthy }
+      shard1b: { condition: service_healthy }
+      shard1c: { condition: service_healthy }
+    entrypoint: ["bash", "/scripts/init-shard.sh", "shard1rs", "shard1a", "shard1b", "shard1c"]
+    volumes: ["./mongo-init:/scripts:ro"]
+    environment:
+      - MONGO_ROOT_USER=${MONGO_ROOT_USER:-admin}
+      - MONGO_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD:-ClusterSuperSecretAdminPassword2026!}
+
+  # =========================================================================
+  # SHARD 2 REPLICA SET (shard2rs)
+  # =========================================================================
+  shard2a: &shard2
+    image: mongo:8.3.11
+    command: ["mongod", "--shardsvr", "--replSet", "shard2rs", "--port", "27018", "--bind_ip_all", "--keyFile", "/data/keyfile/mongo.key"]
+    volumes:
+      - shard2a-data:/data/db
+      - keyfile-data:/data/keyfile:ro
+    depends_on:
+      key-init: { condition: service_completed_successfully }
+    healthcheck: *shard-healthcheck
+  shard2b:
+    <<: *shard2
+    volumes:
+      - shard2b-data:/data/db
+      - keyfile-data:/data/keyfile:ro
+  shard2c:
+    <<: *shard2
+    volumes:
+      - shard2c-data:/data/db
+      - keyfile-data:/data/keyfile:ro
+
+  shard2-init:
+    image: mongo:8.3.11
+    network_mode: "service:shard2a"
+    depends_on:
+      shard2a: { condition: service_healthy }
+      shard2b: { condition: service_healthy }
+      shard2c: { condition: service_healthy }
+    entrypoint: ["bash", "/scripts/init-shard.sh", "shard2rs", "shard2a", "shard2b", "shard2c"]
+    volumes: ["./mongo-init:/scripts:ro"]
+    environment:
+      - MONGO_ROOT_USER=${MONGO_ROOT_USER:-admin}
+      - MONGO_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD:-ClusterSuperSecretAdminPassword2026!}
+
+  # =========================================================================
+  # SHARD 3 REPLICA SET (shard3rs)
+  # =========================================================================
+  shard3a: &shard3
+    image: mongo:8.3.11
+    command: ["mongod", "--shardsvr", "--replSet", "shard3rs", "--port", "27018", "--bind_ip_all", "--keyFile", "/data/keyfile/mongo.key"]
+    volumes:
+      - shard3a-data:/data/db
+      - keyfile-data:/data/keyfile:ro
+    depends_on:
+      key-init: { condition: service_completed_successfully }
+    healthcheck: *shard-healthcheck
+  shard3b:
+    <<: *shard3
+    volumes:
+      - shard3b-data:/data/db
+      - keyfile-data:/data/keyfile:ro
+  shard3c:
+    <<: *shard3
+    volumes:
+      - shard3c-data:/data/db
+      - keyfile-data:/data/keyfile:ro
+
+  shard3-init:
+    image: mongo:8.3.11
+    network_mode: "service:shard3a"
+    depends_on:
+      shard3a: { condition: service_healthy }
+      shard3b: { condition: service_healthy }
+      shard3c: { condition: service_healthy }
+    entrypoint: ["bash", "/scripts/init-shard.sh", "shard3rs", "shard3a", "shard3b", "shard3c"]
+    volumes: ["./mongo-init:/scripts:ro"]
+    environment:
+      - MONGO_ROOT_USER=${MONGO_ROOT_USER:-admin}
+      - MONGO_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD:-ClusterSuperSecretAdminPassword2026!}
+
+  # =========================================================================
+  # MONGOS QUERY ROUTER
+  # =========================================================================
+  mongos1:
+    image: mongo:8.3.11
+    command: ["mongos", "--configdb", "cfgrs/configsvr1:27019,configsvr2:27019,configsvr3:27019", "--port", "27017", "--bind_ip_all", "--keyFile", "/data/keyfile/mongo.key"]
+    ports: ["${MONGOS_PORT:-27017}:27017"]
+    volumes:
+      - keyfile-data:/data/keyfile:ro
+    depends_on:
+      configsvr-init: { condition: service_completed_successfully }
+      shard1-init: { condition: service_completed_successfully }
+      shard2-init: { condition: service_completed_successfully }
+      shard3-init: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "27017", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Registrace shardů na mongos routeru a aktivace shardingu
+  cluster-init:
+    image: mongo:8.3.11
+    depends_on:
+      mongos1: { condition: service_healthy }
+    entrypoint: ["bash", "/scripts/add-shards.sh"]
+    volumes: ["./mongo-init:/scripts:ro"]
+    environment:
+      - MONGO_ROOT_USER=${MONGO_ROOT_USER:-admin}
+      - MONGO_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD:-ClusterSuperSecretAdminPassword2026!}
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-telemedicina}
+
+  # Konfigurace schémat, shard key a import dat
+  data-import:
+    image: mongo:8.3.11
+    depends_on:
+      cluster-init: { condition: service_completed_successfully }
+    entrypoint: ["bash", "/scripts/import-data.sh"]
+    volumes:
+      - ./mongo-init:/scripts:ro
+      - ./data:/import-data:ro
+    # /data/db a /data/configdb jsou VOLUME cesty zděděné z image mongo:8.3.11
+    # (jsou jen pro mongod proces, data-import je nepotřebuje - je to klient).
+    # Explicitní tmpfs je přebije, aby se obešla chyba Docker Desktop
+    # "read-only file system" při vytváření anonymních volumes pro cizí cesty.
+    tmpfs:
+      - /data/db
+      - /data/configdb
+    environment:
+      - MONGO_ROOT_USER=${MONGO_ROOT_USER:-admin}
+      - MONGO_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD:-ClusterSuperSecretAdminPassword2026!}
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-telemedicina}
+
+  # Kontrolní nástroj - spouští se ručně: docker compose run --rm check
+  check:
+    image: mongo:8.3.11
+    depends_on:
+      data-import: { condition: service_completed_successfully }
+    entrypoint: ["bash", "/scripts/check.sh"]
+    volumes: ["./scripts:/scripts:ro"]
+    tmpfs:
+      - /data/db
+      - /data/configdb
+    environment:
+      - MONGO_ROOT_USER=${MONGO_ROOT_USER:-admin}
+      - MONGO_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD:-ClusterSuperSecretAdminPassword2026!}
+      - MONGO_APP_USER=${MONGO_APP_USER:-telemed_app}
+      - MONGO_APP_PASSWORD=${MONGO_APP_PASSWORD:-AppSecureVitalPass2026!}
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-telemedicina}
+    profiles: ["tools"]
+
+volumes:
+  keyfile-data:
+  configsvr1-data:
+  configsvr2-data:
+  configsvr3-data:
+  shard1a-data:
+  shard1b-data:
+  shard1c-data:
+  shard2a-data:
+  shard2b-data:
+  shard2c-data:
+  shard3a-data:
+  shard3b-data:
+  shard3c-data:

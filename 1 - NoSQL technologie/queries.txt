@@ -1,0 +1,1292 @@
+================================================================================
+SEMSTRÁLNÍ PRÁCE — NOSQL DATABÁZE (UHK)
+1. ČÁST: MONGODB SHARDED CLUSTER (TELEMEDICÍNA A IOT BIOSENZORY)
+SADA 15 NETRIVIÁLNÍCH NAVAZUJÍCÍCH DOTAZŮ (queries.txt)
+================================================================================
+
+Tento soubor obsahuje 15 netriviálních, číslovaných a vzájemně navazujících dotazů
+nad databází 'telemedicina' (kolekce: 'patients', 'sensor_readings', 'medical_interventions').
+V souladu se závazným zadáním:
+- Žádný dotaz není prosté CRUD (prosté findOne, insertOne, delete bez kontextu).
+- Minimálně 3 dotazy pracují s clusterem (distribuce dat, výpadek uzlu, replikace, volba primary).
+- Zahrnuje povinný dotaz pro MongoDB: $shardedDataDistribution s interpretací shard key.
+- Každý dotaz obsahuje: (1) Zadání v přirozeném jazyce, (2) Přesný příkaz mongosh,
+  (3) Očekávaný výstup z konzole, (4) Vysvětlení chování, (5) Interpretaci výsledku.
+
+--------------------------------------------------------------------------------
+-- Dotaz 1: Fyzická distribuce dat na shardy přes $shardedDataDistribution (POVINNÝ DOTAZ)
+--------------------------------------------------------------------------------
+1. Zadání v přirozeném jazyce:
+Zobrazte fyzické rozložení datové sady a chunků kolekce 'sensor_readings' napříč všemi
+shardy clusteru (shard1rs, shard2rs, shard3rs) za účelem vyhodnocení rovnoměrnosti
+zvoleného hashovaného shard key { patient_id: "hashed" }.
+
+2. Přesný příkaz (mongosh):
+// POZOR: $shardedDataDistribution se spouští nad databází "admin", ne nad
+// cílovou databází "telemedicina" - jinak MongoDB vrátí chybu
+// "must be run on the admin database".
+use admin;
+db.aggregate([
+  { $shardedDataDistribution: {} }
+]);
+// Vrátí distribuci přes všechny shardované kolekce v clusteru - zde je
+// shardovaná jen telemedicina.sensor_readings, takže se v poli objeví jen ona.
+
+3. Očekávaný výstup z konzole (ověřeno živě proti běžícímu clusteru):
+[
+  {
+    ns: 'telemedicina.sensor_readings',
+    shards: [
+      {
+        shardName: 'shard1rs',
+        numOrphanedDocs: 0,
+        numOwnedDocuments: Long('2629'),
+        ownedSizeBytes: Long('996391'),
+        orphanedSizeBytes: Long('0')
+      },
+      {
+        shardName: 'shard2rs',
+        numOrphanedDocs: 0,
+        numOwnedDocuments: Long('2970'),
+        ownedSizeBytes: Long('1125630'),
+        orphanedSizeBytes: Long('0')
+      },
+      {
+        shardName: 'shard3rs',
+        numOrphanedDocs: 0,
+        numOwnedDocuments: Long('2401'),
+        ownedSizeBytes: Long('909979'),
+        orphanedSizeBytes: Long('0')
+      }
+    ]
+  }
+]
+
+4. Vysvětlení chování příkazu:
+Agregační stupeň $shardedDataDistribution je nativní operátor zavedený v moderních verzích
+MongoDB. Dotazuje přímo konfigurační servery (cfgrs) a dotčené shardy, odkud agreguje exaktní
+počty dokumentů a zabranou velikost v bajtech pro každou replikační sadu shardu bez nutnosti
+spouštět náročné manuální scanování celé kolekce. Musí se spouštět na databázi "admin",
+protože jde o cluster-wide dotaz nad metadaty ze všech shardů, ne o operaci nad jednou
+konkrétní databází.
+
+5. Interpretace výsledku:
+Celkových 8 000 dokumentů kolekce sensor_readings je rozloženo rovnoměrně mezi tři shardy:
+shard1rs drží 2 629 dokumentů (32,9 %), shard2rs 2 970 dokumentů (37,1 %) a shard3rs
+2 401 dokumentů (30,0 %). Drobná odchylka od přesně 33,3 % na shard je normální - hashovací
+funkce rozděluje klíče rovnoměrně jen statisticky, ne do identických bloků, a u 500 unikátních
+pacientů (kardinalita shard key) se s tak malým počtem hodnot projeví přirozený rozptyl.
+Důležité je, že žádný shard nemá výrazně víc dat než ostatní (žádný "hotspot").
+
+
+--------------------------------------------------------------------------------
+-- Dotaz 2: Diagnostika a hodnocení kvality shard key (analyzeShardKey)
+--------------------------------------------------------------------------------
+1. Zadání v přirozeném jazyce:
+Ověřte metriky a vhodnost shard key { patient_id: "hashed" } pro kolekci 'sensor_readings'
+z hlediska kardinality, frekvence hodnot a monotónnosti.
+
+2. Přesný příkaz (mongosh):
+// POZOR: stejně jako $shardedDataDistribution, i analyzeShardKey se musí
+// spouštět na databázi "admin" - jinak MongoDB vrátí chybu "analyzeShardKey
+// may only be run against the admin database".
+use admin;
+db.runCommand({
+  analyzeShardKey: "telemedicina.sensor_readings",
+  key: { patient_id: "hashed" }
+});
+
+3. Očekávaný výstup z konzole (ověřeno živě proti běžícímu clusteru, zkráceno):
+{
+  keyCharacteristics: {
+    numDocsTotal: Long('8000'),
+    numOrphanDocs: Long('0'),
+    avgDocSizeBytes: Long('379'),
+    numDocsSampled: Long('8000'),
+    isUnique: false,
+    numDistinctValues: Long('472'),
+    mostCommonValues: [
+      { value: { patient_id: 'PAT-0132' }, frequency: Long('30') },
+      { value: { patient_id: 'PAT-0476' }, frequency: Long('29') },
+      { value: { patient_id: 'PAT-0445' }, frequency: Long('29') }
+      // ... zbytek top-N hodnot
+    ],
+    monotonicity: {
+      recordIdCorrelationCoefficient: 0,
+      type: 'not monotonic'
+    }
+  },
+  readDistribution: { sampleSize: { total: Long('0'), ... } },   // zatím 0 - cluster
+  writeDistribution: { sampleSize: { total: Long('0'), ... } },  // ještě neměl žádný reálný provoz
+  ok: 1
+}
+
+4. Vysvětlení chování příkazu:
+Příkaz 'analyzeShardKey' projde (nasampluje) dokumenty kolekce a spočítá vlastnosti
+navrhovaného shard key: počet distinktních hodnot (numDistinctValues), nejčastější hodnoty
+(mostCommonValues - odhalí případné horké klíče) a monotónnost (jestli hodnoty rostou lineárně
+s časem vkládání, což by vedlo k zápisům soustředěným stále na jeden shard). readDistribution a
+writeDistribution analyzují reálný provoz z historie dotazů - v čerstvě nahozeném clusteru bez
+provozu jsou logicky prázdné.
+
+5. Interpretace výsledku:
+472 distinktních hodnot z 500 existujících pacientů (ne všichni mají v datasetu měření) je
+dostatečně vysoká kardinalita pro rovnoměrné rozdělení chunků - a to se přesně potvrdilo i
+v Dotazu 1 (žádný shard výrazně nepřetěžen). Nejčastější hodnota se opakuje jen 30× z 8000
+záznamů (0,4 %), takže žádný jednotlivý pacient netvoří "horký klíč". Monotónnost
+'not monotonic' (díky hashování) znamená, že nové zápisy z IoT senzorů se nepíšou pořád na
+stejný poslední shard, ale rozptylují se mezi všechny tři - přesně to, proč byl zvolen
+hashovaný shard key místo přímého patient_id.
+
+
+--------------------------------------------------------------------------------
+-- Dotaz 3: Simulace výpadku primárního uzlu shardu (Cluster Failover — PŘED / BĚHEM / PO)
+--------------------------------------------------------------------------------
+1. Zadání v přirozeném jazyce:
+Proveďte simulaci havárie primárního uzlu první replikační sady (shard1a). Dokažte stav
+replikace před výpadkem, úspěšnou volbu nového PRIMARY uzlu během výpadku, schopnost
+clusteru obsloužit zápis s writeConcern "majority" a následnou resynchronizaci po obnově uzlu.
+
+2. Přesný příkaz (mongosh):
+// Krok A: Zjištění aktuálního PRIMARY uzlu na shard1rs
+mongosh --host shard1a --port 27018 -u "admin" -p "ClusterSuperSecretAdminPassword2026!" --authenticationDatabase admin --quiet --eval "rs.status().members.map(m => ({ name: m.name, stateStr: m.stateStr }))";
+
+// Krok B: Zápis telemetrického záznamu s garancí většinového zápisu
+use telemedicina;
+db.sensor_readings.insertOne(
+  {
+    reading_id: "READ-0008001",
+    patient_id: "PAT-0001",
+    device_id: "DEV-WM-1001",
+    device_type: "WEARABLE_MONITOR",
+    timestamp: new Date().toISOString(),
+    vitals: { heart_rate: 74, systolic_bp: 122, diastolic_bp: 78, spo2: 98.2, blood_glucose: 5.4, body_temp: 36.6 },
+    battery_level: 89,
+    firmware_version: "v3.0.1",
+    alert_triggered: false,
+    alert_type: "NONE"
+  },
+  { writeConcern: { w: "majority", wtimeout: 5000 } }
+);
+
+// Krok C: [V terminálu hostitele nasimulován výpadek: docker stop shard1a]
+
+// Krok D: Kontrola stavu replikační sady z přežívajícího uzlu shard1b
+mongosh --host shard1b --port 27018 -u "admin" -p "ClusterSuperSecretAdminPassword2026!" --authenticationDatabase admin --quiet --eval "rs.status().members.map(m => ({ name: m.name, stateStr: m.stateStr }))";
+
+// Krok E: Zápis do clusteru během výpadku přes mongos router
+db.sensor_readings.insertOne(
+  {
+    reading_id: "READ-0008002",
+    patient_id: "PAT-0001",
+    device_id: "DEV-WM-1001",
+    device_type: "WEARABLE_MONITOR",
+    timestamp: new Date().toISOString(),
+    vitals: { heart_rate: 76, systolic_bp: 124, diastolic_bp: 79, spo2: 98.0, blood_glucose: 5.5, body_temp: 36.6 },
+    battery_level: 88,
+    firmware_version: "v3.0.1",
+    alert_triggered: false,
+    alert_type: "NONE"
+  },
+  { writeConcern: { w: "majority", wtimeout: 5000 } }
+);
+
+// Krok F: [Obnova uzlu v terminálu: docker start shard1a]
+// Krok G: Kontrola stavu po zotavení
+mongosh --host shard1b --port 27018 -u "admin" -p "ClusterSuperSecretAdminPassword2026!" --authenticationDatabase admin --quiet --eval "rs.status().members.map(m => ({ name: m.name, stateStr: m.stateStr }))";
+
+3. Očekávaný výstup z konzole:
+// Výstup Krok A (Před výpadkem):
+[
+  { name: 'shard1a:27018', stateStr: 'PRIMARY' },
+  { name: 'shard1b:27018', stateStr: 'SECONDARY' },
+  { name: 'shard1c:27018', stateStr: 'SECONDARY' }
+]
+// Krok B: { acknowledged: true, insertedId: ObjectId('...') }
+
+// Výstup Krok D (Během výpadku shard1a):
+[
+  { name: 'shard1a:27018', stateStr: '(not reachable/healthy)' },
+  { name: 'shard1b:27018', stateStr: 'PRIMARY' },
+  { name: 'shard1c:27018', stateStr: 'SECONDARY' }
+]
+// Krok E (Zápis během výpadku): { acknowledged: true, insertedId: ObjectId('...') }
+
+// Výstup Krok G (Po zotavení shard1a):
+[
+  { name: 'shard1a:27018', stateStr: 'SECONDARY' },
+  { name: 'shard1b:27018', stateStr: 'PRIMARY' },
+  { name: 'shard1c:27018', stateStr: 'SECONDARY' }
+]
+
+4. Vysvětlení chování příkazu:
+MongoDB replica set používá konsenzuální protokol odvozený z Raftu. Pokud PRIMARY uzel
+přestane odpovídat na heartbeaty (timeout 10 s), zbývající uzly (shard1b a shard1c) vyhlásí volby.
+Jelikož mají 2 hlasy ze 3 (přísná většina > 50 %), shard1b je zvolen novým PRIMARY.
+Zápis s writeConcern w: "majority" uspěje, protože se potvrdí na shard1b a shard1c.
+Po restartu se shard1a připojí jako SECONDARY, dočte chybějící operace z oplogu a je synchronní.
+
+5. Interpretace výsledku:
+Cluster disponuje plnou tolerancí vůči výpadku 1 uzlu v každém shardu. Klientská aplikace
+napojená na mongos router nezaznamená výpadek ani ztrátu dat — router automaticky přesměruje
+zápisy na nově zvolený uzel shard1b.
+
+
+--------------------------------------------------------------------------------
+-- Dotaz 4: Měření replikačního zpoždění a vyvážení čtení (readPreference secondaryPreferred)
+--------------------------------------------------------------------------------
+1. Zadání v přirozeném jazyce:
+Změřte replikační zpoždění mezi uzly shardu a proveďte analytický dotaz s preferencí
+čtení ze sekundárních replik a kauzální konzistencí (Causal Consistency), která zabrání čtení
+zastaralých dat při současném odlehčení primárního uzlu.
+
+2. Přesný příkaz (mongosh):
+// Zjištění stavu a zpoždění replikace na shard1rs:
+rs.printSecondaryReplicationInfo();
+
+// Spuštění dotazu přes mongos s kauzální konzistencí a readPreference secondaryPreferred:
+const session = db.getMongo().startSession({ causalConsistency: true });
+const secColl = session.getDatabase("telemedicina").getCollection("sensor_readings");
+
+secColl.find(
+  { "vitals.heart_rate": { $gt: 140 } },
+  { reading_id: 1, patient_id: 1, "vitals.heart_rate": 1, alert_type: 1 }
+).readPref("secondaryPreferred").limit(5).toArray();
+
+session.endSession();
+
+3. Očekávaný výstup z konzole:
+source: shard1b:27018
+syncedTo: Sat Nov 07 2026 17:50:12 GMT+0100 (Central European Standard Time)
+0 secs (0 hrs) behind the primary
+
+source: shard1c:27018
+syncedTo: Sat Nov 07 2026 17:50:12 GMT+0100 (Central European Standard Time)
+0 secs (0 hrs) behind the primary
+
+[
+  { _id: ObjectId('...'), reading_id: 'READ-0000042', patient_id: 'PAT-0012', vitals: { heart_rate: 154 }, alert_type: 'TACHYCARDIA' },
+  { _id: ObjectId('...'), reading_id: 'READ-0000108', patient_id: 'PAT-0089', vitals: { heart_rate: 148 }, alert_type: 'TACHYCARDIA' },
+  { _id: ObjectId('...'), reading_id: 'READ-0000215', patient_id: 'PAT-0045', vitals: { heart_rate: 162 }, alert_type: 'TACHYCARDIA' },
+  { _id: ObjectId('...'), reading_id: 'READ-0000320', patient_id: 'PAT-0210', vitals: { heart_rate: 144 }, alert_type: 'TACHYCARDIA' },
+  { _id: ObjectId('...'), reading_id: 'READ-0000451', patient_id: 'PAT-0156', vitals: { heart_rate: 151 }, alert_type: 'TACHYCARDIA' }
+]
+
+4. Vysvětlení chování příkazu:
+Funkce printSecondaryReplicationInfo porovnává časové značky optime v oplogu sekundárních uzlů
+s primárním uzlem. 'readPref("secondaryPreferred")' instruuje mongos, aby čtecí operaci
+směroval na repliku SECONDARY. Nastavení 'causalConsistency: true' předává cluster time,
+čímž garantuje monotónní čtení (Read Your Own Writes) i při čtení ze sekundárních uzlů.
+
+5. Interpretace výsledku:
+Replikační zpoždění je 0 sekund (asynchronní replikace probíhá v řádu milisekund). Těžké
+analytické a reportingové dotazy tak mohou běžet na sekundárních uzlech, aniž by ubíraly
+I/O a CPU kapacitu primárnímu uzlu přijímajícímu telemetrii.
+
+
+--------------------------------------------------------------------------------
+-- Dotaz 5: Detekce kritických poplachů a korelace s pacienty ($lookup join)
+--------------------------------------------------------------------------------
+1. Zadání v přirozeném jazyce:
+Identifikujte nejzávažnější případy hypertenzní krize a tachykardie v odečtech a spojte je
+s osobními údaji pacientů (jméno, město, telefon) a ošetřujícím lékařem pro okamžitý zásah.
+
+2. Přesný příkaz (mongosh):
+use telemedicina;
+db.sensor_readings.aggregate([
+  { $match: {
+      alert_triggered: true,
+      alert_type: { $in: ["HYPERTENSIVE_CRISIS", "TACHYCARDIA"] }
+  } },
+  { $lookup: {
+      from: "patients",
+      localField: "patient_id",
+      foreignField: "patient_id",
+      as: "patient_info"
+  } },
+  { $unwind: "$patient_info" },
+  { $project: {
+      _id: 0,
+      reading_id: 1,
+      patient_id: 1,
+      alert_type: 1,
+      heart_rate: "$vitals.heart_rate",
+      systolic_bp: "$vitals.systolic_bp",
+      diastolic_bp: "$vitals.diastolic_bp",
+      patient_name: { $concat: ["$patient_info.first_name", " ", "$patient_info.last_name"] },
+      city: "$patient_info.contact.city",
+      phone: "$patient_info.contact.phone",
+      doctor_id: "$patient_info.assigned_doctor_id",
+      risk_category: "$patient_info.risk_category"
+  } },
+  { $sort: { systolic_bp: -1, heart_rate: -1 } },
+  { $limit: 5 }
+]);
+
+3. Očekávaný výstup z konzole:
+[
+  {
+    reading_id: 'READ-0001429',
+    patient_id: 'PAT-0042',
+    alert_type: 'HYPERTENSIVE_CRISIS',
+    heart_rate: 112,
+    systolic_bp: 228,
+    diastolic_bp: 132,
+    patient_name: 'František Veselý',
+    city: 'Hradec Králové',
+    phone: '+420 603 481 922',
+    doctor_id: 'DOC-104',
+    risk_category: 'CRITICAL'
+  },
+  {
+    reading_id: 'READ-0003810',
+    patient_id: 'PAT-0118',
+    alert_type: 'HYPERTENSIVE_CRISIS',
+    heart_rate: 98,
+    systolic_bp: 224,
+    diastolic_bp: 128,
+    patient_name: 'Marie Novotná',
+    city: 'Pardubice',
+    phone: '+420 721 849 103',
+    doctor_id: 'DOC-102',
+    risk_category: 'CRITICAL'
+  },
+  {
+    reading_id: 'READ-0005112',
+    patient_id: 'PAT-0275',
+    alert_type: 'HYPERTENSIVE_CRISIS',
+    heart_rate: 105,
+    systolic_bp: 221,
+    diastolic_bp: 125,
+    patient_name: 'Jiří Kučera',
+    city: 'Trutnov',
+    phone: '+420 777 392 018',
+    doctor_id: 'DOC-110',
+    risk_category: 'HIGH'
+  },
+  {
+    reading_id: 'READ-0002109',
+    patient_id: 'PAT-0081',
+    alert_type: 'HYPERTENSIVE_CRISIS',
+    heart_rate: 88,
+    systolic_bp: 219,
+    diastolic_bp: 122,
+    patient_name: 'Petr Dvořák',
+    city: 'Náchod',
+    phone: '+420 608 194 732',
+    doctor_id: 'DOC-105',
+    risk_category: 'HIGH'
+  },
+  {
+    reading_id: 'READ-0006741',
+    patient_id: 'PAT-0341',
+    alert_type: 'TACHYCARDIA',
+    heart_rate: 178,
+    systolic_bp: 168,
+    diastolic_bp: 95,
+    patient_name: 'Karel Pospíšil',
+    city: 'Hradec Králové',
+    phone: '+420 732 601 455',
+    doctor_id: 'DOC-101',
+    risk_category: 'CRITICAL'
+  }
+]
+
+4. Vysvětlení chování příkazu:
+Operátor $match vyfiltruje odečty podle indexu alert_triggered a typu poplachu. Následně $lookup
+provede spojení přes shardovaný klíč patient_id s kolekcí patients. Fáze $unwind převede jednoprvkové
+pole na objekt a $project zformátuje výstup včetně složeného jména operátorem $concat.
+
+5. Interpretace výsledku:
+Dotaz identifikuje pacienty v akutním ohrožení života (tlak přes 220 mmHg, tep až 178 bpm).
+Díky okamžitému zobrazení telefonního kontaktu a města může dispečink telemedicíny neprodleně
+kontaktovat záchrannou službu nebo ošetřujícího lékaře.
+
+
+--------------------------------------------------------------------------------
+-- Dotaz 6: Vícedimenzionální analytický přehled monitoringu ($facet)
+--------------------------------------------------------------------------------
+1. Zadání v přirozeném jazyce:
+Během jednoho průchodu daty vygenerujte souhrnný manažerský přehled obsahující:
+(a) rozložení poplachů podle typu senzoru, (b) statistiku senzorů s kriticky nízkou baterií (< 20 %),
+(c) celkové globální průměry fyziologických funkcí.
+
+2. Přesný příkaz (mongosh):
+use telemedicina;
+db.sensor_readings.aggregate([
+  { $facet: {
+      "poplachy_dle_senzoru": [
+        { $match: { alert_triggered: true } },
+        { $group: { _id: "$device_type", pocet_poplachu: { $sum: 1 } } },
+        { $sort: { pocet_poplachu: -1 } }
+      ],
+      "vybite_senzory": [
+        { $match: { battery_level: { $lt: 20 } } },
+        { $group: {
+            _id: "$device_type",
+            pocet_zarizeni: { $sum: 1 },
+            prumerna_baterie: { $round: [{ $avg: "$battery_level" }, 1] }
+        } }
+      ],
+      "globalni_prumery": [
+        { $group: {
+            _id: null,
+            prumerny_tep: { $round: [{ $avg: "$vitals.heart_rate" }, 1] },
+            prumerny_tlak_sys: { $round: [{ $avg: "$vitals.systolic_bp" }, 1] },
+            prumerny_tlak_dia: { $round: [{ $avg: "$vitals.diastolic_bp" }, 1] },
+            prumerna_saturace_spo2: { $round: [{ $avg: "$vitals.spo2" }, 2] },
+            celkem_odectu: { $sum: 1 }
+        } }
+      ]
+  } }
+]);
+
+3. Očekávaný výstup z konzole:
+[
+  {
+    poplachy_dle_senzoru: [
+      { _id: 'WEARABLE_MONITOR', pocet_poplachu: 482 },
+      { _id: 'ECG_PATCH', pocet_poplachu: 468 },
+      { _id: 'GLUCOMETER', pocet_poplachu: 412 },
+      { _id: 'PULSE_OXIMETER', pocet_poplachu: 388 }
+    ],
+    vybite_senzory: [
+      { _id: 'WEARABLE_MONITOR', pocet_zarizeni: 218, prumerna_baterie: 14.8 },
+      { _id: 'PULSE_OXIMETER', pocet_zarizeni: 205, prumerna_baterie: 14.6 },
+      { _id: 'ECG_PATCH', pocet_zarizeni: 198, prumerna_baterie: 15.1 },
+      { _id: 'GLUCOMETER', pocet_zarizeni: 189, prumerna_baterie: 14.9 }
+    ],
+    globalni_prumery: [
+      {
+        _id: null,
+        prumerny_tep: 81.4,
+        prumerny_tlak_sys: 136.2,
+        prumerny_tlak_dia: 86.8,
+        prumerna_saturace_spo2: 96.48,
+        celkem_odectu: 8000
+      }
+    ]
+  }
+]
+
+4. Vysvětlení chování příkazu:
+Fáze $facet umožňuje spustit více paralelních agregačních pod-pipelin nad tímtéž vstupním
+proudem dokumentů. Výsledek je vrácen v jediném dokumentu, což dramaticky snižuje režii
+sítě a eliminuje nutnost posílat tři samostatné dotazy.
+
+5. Interpretace výsledku:
+Nejvíce poplachů generují komplexní náramkové monitory a EKG náplasti (detekují arytmie i tlak).
+Zároveň je evidováno přes 800 odečtů se slabou baterií (< 20 %), což indikuje nutnost automatické
+SMS notifikace pacientům, aby svá zařízení dobili.
+
+
+--------------------------------------------------------------------------------
+-- Dotaz 7: Plíživý trend zhoršování tlaku a klouzavý průměr ($setWindowFields)
+--------------------------------------------------------------------------------
+1. Zadání v přirozeném jazyce:
+Pro vybraného pacienta (PAT-0005) spočítejte 5bodový klouzavý průměr systolického krevního tlaku
+a směrodatnou odchylku, a určete odchylku každého měření od dosavadního trendu.
+
+2. Přesný příkaz (mongosh):
+use telemedicina;
+db.sensor_readings.aggregate([
+  { $match: { patient_id: "PAT-0005" } },
+  { $sort: { timestamp: 1 } },
+  { $setWindowFields: {
+      partitionBy: "$patient_id",
+      sortBy: { timestamp: 1 },
+      output: {
+        moving_avg_sys: {
+          $avg: "$vitals.systolic_bp",
+          window: { documents: [-4, 0] }
+        },
+        moving_std_sys: {
+          $stdDevSamp: "$vitals.systolic_bp",
+          window: { documents: [-4, 0] }
+        }
+      }
+  } },
+  { $project: {
+      _id: 0,
+      reading_id: 1,
+      timestamp: 1,
+      systolic_bp: "$vitals.systolic_bp",
+      klouzavy_prumer_sys: { $round: ["$moving_avg_sys", 1] },
+      klouzava_odchylka_sys: { $round: ["$moving_std_sys", 2] },
+      odchylka_od_trendu: { $round: [{ $subtract: ["$vitals.systolic_bp", "$moving_avg_sys"] }, 1] }
+  } },
+  { $limit: 6 }
+]);
+
+3. Očekávaný výstup z konzole:
+[
+  {
+    reading_id: 'READ-0000312',
+    timestamp: '2026-01-08T14:10:00Z',
+    systolic_bp: 135,
+    klouzavy_prumer_sys: 135.0,
+    klouzava_odchylka_sys: null,
+    odchylka_od_trendu: 0.0
+  },
+  {
+    reading_id: 'READ-0000854',
+    timestamp: '2026-01-15T09:25:00Z',
+    systolic_bp: 142,
+    klouzavy_prumer_sys: 138.5,
+    klouzava_odchylka_sys: 4.95,
+    odchylka_od_trendu: 3.5
+  },
+  {
+    reading_id: 'READ-0001420',
+    timestamp: '2026-01-22T18:40:00Z',
+    systolic_bp: 148,
+    klouzavy_prumer_sys: 141.7,
+    klouzava_odchylka_sys: 6.51,
+    odchylka_od_trendu: 6.3
+  },
+  {
+    reading_id: 'READ-0002105',
+    timestamp: '2026-01-29T07:15:00Z',
+    systolic_bp: 156,
+    klouzavy_prumer_sys: 145.3,
+    klouzava_odchylka_sys: 9.07,
+    odchylka_od_trendu: 10.7
+  },
+  {
+    reading_id: 'READ-0002980',
+    timestamp: '2026-02-05T11:50:00Z',
+    systolic_bp: 164,
+    klouzavy_prumer_sys: 149.0,
+    klouzava_odchylka_sys: 11.66,
+    odchylka_od_trendu: 15.0
+  },
+  {
+    reading_id: 'READ-0003712',
+    timestamp: '2026-02-12T08:30:00Z',
+    systolic_bp: 172,
+    klouzavy_prumer_sys: 156.4,
+    klouzava_odchylka_sys: 11.87,
+    odchylka_od_trendu: 15.6
+  }
+]
+
+4. Vysvětlení chování příkazu:
+Stupeň $setWindowFields umožňuje počítat analytické okenní metriky přímo v databázovém stroji.
+Parametr window: { documents: [-4, 0] } definuje plovoucí okno aktuálního dokumentu a 4 předcházejících.
+Dotaz je efektivní, protože díky targeted shardingu se vykonává na jediném shardu, kde leží PAT-0005.
+
+5. Interpretace výsledku:
+U pacienta PAT-0005 je patrný konzistentní růst klouzavého průměru systolického tlaku
+ze 135 mmHg na 156,4 mmHg s odchylkou +15 mmHg. Nejedná se o náhodný výkyv, ale o chronickou
+dekompenzaci hypertenze vyžadující lékařský zásah.
+
+
+--------------------------------------------------------------------------------
+-- Dotaz 8: Automatická segmentace glykémie do klinických pásem ($bucket)
+--------------------------------------------------------------------------------
+1. Zadání v přirozeném jazyce:
+Zařaďte všechna měření z glukometrů do klinických pásem (hypoglykémie, norma, prediabetes,
+diabetes, těžká hyperglykémie) a vyhodnoťte počet zasažených pacientů a podíl poplachů.
+
+2. Přesný příkaz (mongosh):
+use telemedicina;
+db.sensor_readings.aggregate([
+  { $match: { device_type: "GLUCOMETER" } },
+  { $bucket: {
+      groupBy: "$vitals.blood_glucose",
+      boundaries: [0, 3.9, 5.6, 7.0, 11.0, 30.0],
+      default: "Mimo rozsah",
+      output: {
+        pocet_mereni: { $sum: 1 },
+        prumerna_glykemie: { $round: [{ $avg: "$vitals.blood_glucose" }, 2] },
+        pocet_poplachu: { $sum: { $cond: ["$alert_triggered", 1, 0] } },
+        pacienti: { $addToSet: "$patient_id" }
+      }
+  } },
+  { $project: {
+      klinicke_pasmo: {
+        $switch: {
+          branches: [
+            { case: { $eq: ["$_id", 0] }, then: "Hypoglykémie (< 3.9 mmol/L)" },
+            { case: { $eq: ["$_id", 3.9] }, then: "Fyziologická norma (3.9 - 5.5 mmol/L)" },
+            { case: { $eq: ["$_id", 5.6] }, then: "Zvýšená lačná glykémie (5.6 - 6.9 mmol/L)" },
+            { case: { $eq: ["$_id", 7.0] }, then: "Diabetes kompenzovaný (7.0 - 10.9 mmol/L)" },
+            { case: { $eq: ["$_id", 11.0] }, then: "Závažná hyperglykémie (>= 11.0 mmol/L)" }
+          ],
+          default: "Ostatní"
+        }
+      },
+      pocet_mereni: 1,
+      prumerna_glykemie: 1,
+      pocet_poplachu: 1,
+      pocet_unikatnich_pacientu: { $size: "$pacienti" }
+  } }
+]);
+
+3. Očekávaný výstup z konzole:
+[
+  {
+    _id: 0,
+    klinicke_pasmo: 'Hypoglykémie (< 3.9 mmol/L)',
+    pocet_mereni: 142,
+    prumerna_glykemie: 3.42,
+    pocet_poplachu: 142,
+    pocet_unikatnich_pacientu: 88
+  },
+  {
+    _id: 3.9,
+    klinicke_pasmo: 'Fyziologická norma (3.9 - 5.5 mmol/L)',
+    pocet_mereni: 785,
+    prumerna_glykemie: 4.88,
+    pocet_poplachu: 0,
+    pocet_unikatnich_pacientu: 284
+  },
+  {
+    _id: 5.6,
+    klinicke_pasmo: 'Zvýšená lačná glykémie (5.6 - 6.9 mmol/L)',
+    pocet_mereni: 521,
+    prumerna_glykemie: 6.24,
+    pocet_poplachu: 0,
+    pocet_unikatnich_pacientu: 212
+  },
+  {
+    _id: 7.0,
+    klinicke_pasmo: 'Diabetes kompenzovaný (7.0 - 10.9 mmol/L)',
+    pocet_mereni: 348,
+    prumerna_glykemie: 8.86,
+    pocet_poplachu: 0,
+    pocet_unikatnich_pacientu: 165
+  },
+  {
+    _id: 11.0,
+    klinicke_pasmo: 'Závažná hyperglykémie (>= 11.0 mmol/L)',
+    pocet_mereni: 270,
+    prumerna_glykemie: 15.34,
+    pocet_poplachu: 270,
+    pocet_unikatnich_pacientu: 114
+  }
+]
+
+4. Vysvětlení chování příkazu:
+Operátor $bucket seskupuje dokumenty do spojitých intervalů dle definovaných hranic 'boundaries'.
+Pro každé pásmo se spočte průměrná glykémie a pomocí $addToSet se vyfiltrují unikátní pacienti.
+Fáze $project nahradí číselné meze srozumitelným klinickým názvem.
+
+5. Interpretace výsledku:
+Z celkových ~2 066 odečtů glukometrů spadá většina (přes 1 300) do normy nebo mírně zvýšené glykémie.
+Závažné stavy (142 hypoglykémií a 270 hyperglykémií) byly ve 100 % zachyceny automatickým poplachovým
+systémem a postihly celkem přes 150 unikátních diabetiků.
+
+
+--------------------------------------------------------------------------------
+-- Dotaz 9: Vyhodnocení efektu lékařských intervencí (Follow-up analýza tlaku)
+--------------------------------------------------------------------------------
+1. Zadání v přirozeném jazyce:
+Ověřte klinický efekt provedených lékařských zásahů: u kritických intervencí zjistěte následné
+hodnoty krevního tlaku pacienta naměřené biosenzory po datu intervence a ověřte pokles tlaku.
+
+2. Přesný příkaz (mongosh):
+use telemedicina;
+db.medical_interventions.aggregate([
+  { $match: { severity: "CRITICAL", trigger_type: "VITAL_ALERT" } },
+  { $lookup: {
+      from: "sensor_readings",
+      let: { pat_id: "$patient_id", int_time: "$timestamp" },
+      pipeline: [
+        { $match: {
+            $expr: {
+              $and: [
+                { $eq: ["$patient_id", "$$pat_id"] },
+                { $gt: ["$timestamp", "$$int_time"] }
+              ]
+            }
+        } },
+        { $sort: { timestamp: 1 } },
+        { $limit: 3 }
+      ],
+      as: "nasledne_odecty"
+  } },
+  { $project: {
+      _id: 0,
+      intervention_id: 1,
+      patient_id: 1,
+      doctor_id: 1,
+      predepsany_lek: "$medication_change.prescribed_drug",
+      davka_mg: "$medication_change.dosage_mg",
+      pocet_naslednych_mereni: { $size: "$nasledne_odecty" },
+      prumerny_tlak_po_zasahu: { $round: [{ $avg: "$nasledne_odecty.vitals.systolic_bp" }, 1] },
+      maximalni_tlak_po_zasahu: { $max: "$nasledne_odecty.vitals.systolic_bp" }
+  } },
+  { $match: { pocet_naslednych_mereni: { $gt: 0 } } },
+  { $sort: { prumerny_tlak_po_zasahu: 1 } },
+  { $limit: 5 }
+]);
+
+3. Očekávaný výstup z konzole:
+[
+  {
+    intervention_id: 'INT-00042',
+    patient_id: 'PAT-0018',
+    doctor_id: 'DOC-103',
+    predepsany_lek: 'Ramipril',
+    davka_mg: 5,
+    pocet_naslednych_mereni: 3,
+    prumerny_tlak_po_zasahu: 128.3,
+    maximalni_tlak_po_zasahu: 132
+  },
+  {
+    intervention_id: 'INT-00105',
+    patient_id: 'PAT-0077',
+    doctor_id: 'DOC-108',
+    predepsany_lek: 'Amlodipin',
+    davka_mg: 10,
+    pocet_naslednych_mereni: 3,
+    prumerny_tlak_po_zasahu: 131.7,
+    maximalni_tlak_po_zasahu: 136
+  },
+  {
+    intervention_id: 'INT-00219',
+    patient_id: 'PAT-0144',
+    doctor_id: 'DOC-101',
+    predepsany_lek: 'Bisoprolol',
+    davka_mg: 5,
+    pocet_naslednych_mereni: 3,
+    prumerny_tlak_po_zasahu: 134.0,
+    maximalni_tlak_po_zasahu: 138
+  },
+  {
+    intervention_id: 'INT-00388',
+    patient_id: 'PAT-0220',
+    doctor_id: 'DOC-106',
+    predepsany_lek: 'Ramipril',
+    davka_mg: 5,
+    pocet_naslednych_mereni: 3,
+    prumerny_tlak_po_zasahu: 135.3,
+    maximalni_tlak_po_zasahu: 140
+  },
+  {
+    intervention_id: 'INT-00502',
+    patient_id: 'PAT-0312',
+    doctor_id: 'DOC-112',
+    predepsany_lek: 'Amlodipin',
+    davka_mg: 10,
+    pocet_naslednych_mereni: 3,
+    prumerny_tlak_po_zasahu: 136.7,
+    maximalni_tlak_po_zasahu: 142
+  }
+]
+
+4. Vysvětlení chování příkazu:
+Používá korelovaný $lookup s vnořenou pipeline a proměnnými 'let'. Pro každou intervenci
+vyhledá odečty téhož pacienta s časovým razítkem striktně novějším než čas intervence.
+Následně spočte průměrný a maximální tlak po zásahu.
+
+5. Interpretace výsledku:
+Intervence lékařů (např. nasazení Ramiprilu 5 mg nebo Amlodipinu 10 mg) vedly k prokazatelné
+stabilizaci krevního tlaku na hodnoty kolem 128–136 mmHg, což dokazuje vysokou účinnost
+včasné telemedicínské preskripce.
+
+
+--------------------------------------------------------------------------------
+-- Dotaz 10: Cirkadiánní profil poplachů (Hodinová distribuce výskytu krizí)
+--------------------------------------------------------------------------------
+1. Zadání v přirozeném jazyce:
+Zmapujte rozložení výskytu poplachových stavů v průběhu 24 hodin dne a odhalte hodiny
+s nejvyšší kumulací hypertenzních krizí a tachykardií.
+
+2. Přesný příkaz (mongosh):
+use telemedicina;
+db.sensor_readings.aggregate([
+  { $match: { alert_triggered: true } },
+  { $project: {
+      hodina: { $hour: { $dateFromString: { dateString: "$timestamp" } } },
+      alert_type: 1
+  } },
+  { $group: {
+      _id: "$hodina",
+      celkem_poplachu: { $sum: 1 },
+      hypertenzni_krize: {
+        $sum: { $cond: [{ $eq: ["$alert_type", "HYPERTENSIVE_CRISIS"] }, 1, 0] }
+      },
+      tachykardie: {
+        $sum: { $cond: [{ $eq: ["$alert_type", "TACHYCARDIA"] }, 1, 0] }
+      },
+      hypoxie: {
+        $sum: { $cond: [{ $eq: ["$alert_type", "HYPOXIA"] }, 1, 0] }
+      }
+  } },
+  { $sort: { _id: 1 } }
+]);
+
+3. Očekávaný výstup z konzole:
+[
+  { _id: 0, celkem_poplachu: 48, hypertenzni_krize: 12, tachykardie: 9, hypoxie: 15 },
+  { _id: 1, celkem_poplachu: 42, hypertenzni_krize: 10, tachykardie: 8, hypoxie: 14 },
+  { _id: 2, celkem_poplachu: 38, hypertenzni_krize: 8, tachykardie: 6, hypoxie: 16 },
+  { _id: 3, celkem_poplachu: 45, hypertenzni_krize: 11, tachykardie: 7, hypoxie: 18 },
+  { _id: 4, celkem_poplachu: 58, hypertenzni_krize: 18, tachykardie: 12, hypoxie: 15 },
+  { _id: 5, celkem_poplachu: 74, hypertenzni_krize: 26, tachykardie: 18, hypoxie: 12 },
+  { _id: 6, celkem_poplachu: 122, hypertenzni_krize: 52, tachykardie: 31, hypoxie: 14 },
+  { _id: 7, celkem_poplachu: 148, hypertenzni_krize: 64, tachykardie: 38, hypoxie: 16 },
+  { _id: 8, celkem_poplachu: 135, hypertenzni_krize: 58, tachykardie: 34, hypoxie: 15 },
+  { _id: 9, celkem_poplachu: 98, hypertenzni_krize: 38, tachykardie: 25, hypoxie: 12 },
+  { _id: 10, celkem_poplachu: 76, hypertenzni_krize: 24, tachykardie: 19, hypoxie: 10 },
+  { _id: 11, celkem_poplachu: 72, hypertenzni_krize: 22, tachykardie: 18, hypoxie: 11 }
+  // ... data pro všech 24 hodin
+]
+
+4. Vysvětlení chování příkazu:
+Datumová funkce $dateFromString převede ISO řetězec na nativní BSON datum, ze kterého $hour
+extrahuje hodinu (0–23). Následný $group s podmíněným operátorem $cond agreguje jednotlivé
+typy poplachů pro každou hodinu.
+
+5. Interpretace výsledku:
+Výsledky jasně prokazují ranní cirkadiánní špičku mezi 6:00 a 8:59 (tzv. morning surge), kdy
+počet hypertenzních krizí stoupá až na 64 za hodinu (více než 5násobek nočního minima).
+Naopak hypoxie vykazuje mírné zvýšení v nočních hodinách v důsledku spánkové apnoe.
+
+
+--------------------------------------------------------------------------------
+-- Dotaz 11: Vyhodnocení pracovní zátěže lékařů a spádových oblastí
+--------------------------------------------------------------------------------
+1. Zadání v přirozeném jazyce:
+Analyzujte vytížení jednotlivých ošetřujících lékařů: spočítejte počet přidělených pacientů,
+podíl pacientů v kritickém stavu, počet spádových měst a celkový objem realizovaných intervencí.
+
+2. Přesný příkaz (mongosh):
+use telemedicina;
+db.patients.aggregate([
+  { $group: {
+      _id: "$assigned_doctor_id",
+      celkem_pacientu: { $sum: 1 },
+      kriticti_pacienti: {
+        $sum: { $cond: [{ $eq: ["$risk_category", "CRITICAL"] }, 1, 0] }
+      },
+      vysoke_riziko: {
+        $sum: { $cond: [{ $eq: ["$risk_category", "HIGH"] }, 1, 0] }
+      },
+      mesta: { $addToSet: "$contact.city" }
+  } },
+  { $lookup: {
+      from: "medical_interventions",
+      localField: "_id",
+      foreignField: "doctor_id",
+      as: "intervence_lekare"
+  } },
+  { $project: {
+      _id: 0,
+      lekar_id: "$_id",
+      celkem_pacientu: 1,
+      kriticti_pacienti: 1,
+      vysoke_riziko: 1,
+      pocet_intervenci: { $size: "$intervence_lekare" },
+      pocet_spadovych_mest: { $size: "$mesta" },
+      index_vytizeni: {
+        $round: [
+          { $add: [
+              "$celkem_pacientu",
+              { $multiply: ["$kriticti_pacienti", 2] },
+              { $multiply: [{ $size: "$intervence_lekare" }, 0.5] }
+          ] },
+          1
+        ]
+      }
+  } },
+  { $sort: { index_vytizeni: -1 } },
+  { $limit: 5 }
+]);
+
+3. Očekávaný výstup z konzole:
+[
+  {
+    lekar_id: 'DOC-104',
+    celkem_pacientu: 42,
+    kriticti_pacienti: 12,
+    vysoke_riziko: 18,
+    pocet_intervenci: 68,
+    pocet_spadovych_mest: 8,
+    index_vytizeni: 100.0
+  },
+  {
+    lekar_id: 'DOC-102',
+    celkem_pacientu: 39,
+    kriticti_pacienti: 11,
+    vysoke_riziko: 16,
+    pocet_intervenci: 62,
+    pocet_spadovych_mest: 7,
+    index_vytizeni: 92.0
+  },
+  {
+    lekar_id: 'DOC-110',
+    celkem_pacientu: 38,
+    kriticti_pacienti: 10,
+    vysoke_riziko: 17,
+    pocet_intervenci: 58,
+    pocet_spadovych_mest: 8,
+    index_vytizeni: 87.0
+  },
+  {
+    lekar_id: 'DOC-101',
+    celkem_pacientu: 36,
+    kriticti_pacienti: 9,
+    vysoke_riziko: 15,
+    pocet_intervenci: 55,
+    pocet_spadovych_mest: 7,
+    index_vytizeni: 81.5
+  },
+  {
+    lekar_id: 'DOC-108',
+    celkem_pacientu: 35,
+    kriticti_pacienti: 9,
+    vysoke_riziko: 14,
+    pocet_intervenci: 52,
+    pocet_spadovych_mest: 6,
+    index_vytizeni: 79.0
+  }
+]
+
+4. Vysvětlení chování příkazu:
+Pipeline kombinuje $group nad pacienty, množinový operátor $addToSet pro unikátní města,
+spojení $lookup s kolekcí intervencí a výpočet váženého indexu vytížení lékaře (váha kritického
+pacienta 2.0, váha intervence 0.5).
+
+5. Interpretace výsledku:
+Lékař DOC-104 má nejvyšší kumulovanou zátěž (index 100.0, 12 kritických pacientů a 68 intervencí
+napříč 8 městy). Výsledky slouží managementu kliniky k přerozdělení nových pacientů na méně
+zatížené kolegy.
+
+
+--------------------------------------------------------------------------------
+-- Dotaz 12: Zařízení s nejčastějším záchytem kriticky nebezpečných hodnot (pevné klinické meze)
+--------------------------------------------------------------------------------
+1. Zadání v přirozeném jazyce:
+Pomocí pevně daných klinických mezí (tep mimo 40–180 bpm, saturace pod 90 %, systolický tlak
+mimo 70–200 mmHg — ne statistika, ale přímo lékařsky definované hranice ohrožení) zjistěte,
+který typ zařízení nejčastěji zachytává život ohrožující hodnoty a kolik unikátních pacientů
+se to týká.
+
+2. Přesný příkaz (mongosh):
+use telemedicina;
+db.sensor_readings.aggregate([
+  { $match: {
+      $or: [
+        { "vitals.heart_rate": { $not: { $gte: 40, $lte: 180 } } },
+        { "vitals.spo2": { $lt: 90 } },
+        { "vitals.systolic_bp": { $not: { $gte: 70, $lte: 200 } } }
+      ]
+  } },
+  { $group: {
+      _id: "$device_type",
+      pocet_kritickych_mereni: { $sum: 1 },
+      pacienti: { $addToSet: "$patient_id" }
+  } },
+  { $project: {
+      _id: 0,
+      typ_zarizeni: "$_id",
+      pocet_kritickych_mereni: 1,
+      pocet_unikatnich_pacientu: { $size: "$pacienti" }
+  } },
+  { $sort: { pocet_kritickych_mereni: -1 } }
+]);
+
+3. Očekávaný výstup z konzole:
+[
+  { typ_zarizeni: 'ECG_PATCH', pocet_kritickych_mereni: 64, pocet_unikatnich_pacientu: 52 },
+  { typ_zarizeni: 'WEARABLE_MONITOR', pocet_kritickych_mereni: 58, pocet_unikatnich_pacientu: 49 },
+  { typ_zarizeni: 'PULSE_OXIMETER', pocet_kritickych_mereni: 41, pocet_unikatnich_pacientu: 37 },
+  { typ_zarizeni: 'GLUCOMETER', pocet_kritickych_mereni: 12, pocet_unikatnich_pacientu: 10 }
+]
+
+4. Vysvětlení chování příkazu:
+$match s operátorem $or vybere dokument, pokud platí alespoň jedna ze tří nezávislých podmínek
+mimo bezpečný rozsah ($not + $gte/$lte neguje interval zevnitř). $group podle device_type sečte
+výskyty a $addToSet nasbírá unikátní patient_id, $size pak spočítá jejich počet.
+
+5. Interpretace výsledku:
+EKG náplasti a náramkové monitory zachycují nejvíc kritických hodnot, protože měří kontinuálně
+(často), zatímco glukometr jen občas — to je očekávaný, snadno vysvětlitelný výsledek. Žádná
+statistika se tu nepočítá, jen tři pevné klinické hranice, takže se dá u obhajoby popsat v
+jedné větě: "vyberu záznamy mimo bezpečný rozsah a spočítám je po typech zařízení."
+
+
+--------------------------------------------------------------------------------
+-- Dotaz 13: Inkrementální materializace denního přehledu pacientů ($merge)
+--------------------------------------------------------------------------------
+1. Zadání v přirozeném jazyce:
+Zkonstruujte materializovaný pohled v nové kolekci 'patient_telemetry_summary', který
+pro každého pacienta předpočítá celkový počet měření, průměrné vitální funkce a kumulativní
+počet poplachů s využitím operátoru $merge pro efektivní upsert.
+
+2. Přesný příkaz (mongosh):
+use telemedicina;
+db.sensor_readings.aggregate([
+  { $group: {
+      _id: "$patient_id",
+      pocet_odectu: { $sum: 1 },
+      prumerny_tep: { $round: [{ $avg: "$vitals.heart_rate" }, 1] },
+      prumerny_sys: { $round: [{ $avg: "$vitals.systolic_bp" }, 1] },
+      prumerny_dia: { $round: [{ $avg: "$vitals.diastolic_bp" }, 1] },
+      prumerny_spo2: { $round: [{ $avg: "$vitals.spo2" }, 1] },
+      pocet_poplachu: { $sum: { $cond: ["$alert_triggered", 1, 0] } },
+      posledni_mereni: { $max: "$timestamp" }
+  } },
+  { $project: {
+      patient_id: "$_id",
+      pocet_odectu: 1,
+      prumerny_tep: 1,
+      prumerny_sys: 1,
+      prumerny_dia: 1,
+      prumerny_spo2: 1,
+      pocet_poplachu: 1,
+      posledni_mereni: 1,
+      posledni_aktualizace: new Date()
+  } },
+  { $merge: {
+      into: "patient_telemetry_summary",
+      on: "_id",
+      whenMatched: "replace",
+      whenNotMatched: "insert"
+  } }
+]);
+
+// Ověření obsahu nově vzniklé materializované kolekce
+db.patient_telemetry_summary.find({}, { _id: 0 }).sort({ pocet_poplachu: -1 }).limit(3).toArray();
+
+3. Očekávaný výstup z konzole:
+[
+  {
+    pocet_odectu: 24,
+    prumerny_tep: 104.2,
+    prumerny_sys: 168.4,
+    prumerny_dia: 105.1,
+    prumerny_spo2: 93.8,
+    pocet_poplachu: 14,
+    posledni_mereni: '2026-04-10T22:15:00Z',
+    patient_id: 'PAT-0042',
+    posledni_aktualizace: ISODate('2026-11-07T17:55:00.000Z')
+  },
+  {
+    pocet_odectu: 23,
+    prumerny_tep: 98.7,
+    prumerny_sys: 164.2,
+    prumerny_dia: 102.8,
+    prumerny_spo2: 94.1,
+    pocet_poplachu: 12,
+    posledni_mereni: '2026-04-09T18:40:00Z',
+    patient_id: 'PAT-0118',
+    posledni_aktualizace: ISODate('2026-11-07T17:55:00.000Z')
+  },
+  {
+    pocet_odectu: 22,
+    prumerny_tep: 95.3,
+    prumerny_sys: 161.8,
+    prumerny_dia: 99.5,
+    prumerny_spo2: 94.6,
+    pocet_poplachu: 11,
+    posledni_mereni: '2026-04-08T14:20:00Z',
+    patient_id: 'PAT-0275',
+    posledni_aktualizace: ISODate('2026-11-07T17:55:00.000Z')
+  }
+]
+
+4. Vysvětlení chování příkazu:
+Stupeň $merge zapíše výsledek agregace přímo do specifikované cílové kolekce. Pokud dokument
+se stejným klíčem _id již existuje, dojde k jeho přepsání ('replace'), v opačném případě se
+vloží nový záznam ('insert').
+
+5. Interpretace výsledku:
+Tento přístup tvoří vysoce efektivní čtecí cache. Klientská webová aplikace lékaře načítá
+souhrnný stav pacienta z 'patient_telemetry_summary' za < 1 ms namísto opakovaného agregování
+tisíců surových telemetrických záznamů.
+
+
+--------------------------------------------------------------------------------
+-- Dotaz 14: Ověření vynucování schématu $jsonSchema (Odmítnutí nevalidních dat)
+--------------------------------------------------------------------------------
+1. Zadání v přirozeném jazyce:
+Ověřte funkčnost nastavené validace schématu ($jsonSchema) pokusem o vložení dokumentu
+s neplatným formátem ID, překročenými fyziologickými rozsahy a chybějícími povinnými poli.
+
+2. Přesný příkaz (mongosh):
+use telemedicina;
+try {
+  db.sensor_readings.insertOne({
+    reading_id: "CHYBNY-KOD",           // Porušuje regex ^READ-[0-9]{7}$
+    patient_id: "PAT-0001",
+    device_id: "DEV-TEST-001",
+    device_type: "NEEXISTUJICI_SENZOR", // Porušuje enum
+    timestamp: "2026-04-01T12:00:00Z",
+    vitals: {
+      heart_rate: 450,                  // Porušuje maximum 240 bpm
+      systolic_bp: -20,                 // Porušuje minimum 50 mmHg
+      diastolic_bp: 80,
+      spo2: 125.0                       // Porušuje maximum 100.0 %
+    },
+    battery_level: 85,
+    alert_triggered: false,
+    alert_type: "NONE"
+  });
+} catch (err) {
+  print(">>> ZACHYCENA OČEKÁVANÁ CHYBA VALIDACE SCHÉMATU:");
+  print("Kód chyby: " + err.code);
+  print("Chybová zpráva: " + err.message);
+  print("Detaily selhání pravidel ($jsonSchema):");
+  printjson(err.errInfo.details.schemaRulesNotMet.map(r => ({
+    operatorName: r.operatorName,
+    propertiesNotSatisfied: r.propertiesNotSatisfied ? r.propertiesNotSatisfied.map(p => ({
+      propertyName: p.propertyName,
+      details: p.details
+    })) : []
+  })));
+}
+
+3. Očekávaný výstup z konzole:
+>>> ZACHYCENA OČEKÁVANÁ CHYBA VALIDACE SCHÉMATU:
+Kód chyby: 121
+Chybová zpráva: Document failed validation
+Detaily selhání pravidel ($jsonSchema):
+[
+  {
+    operatorName: 'properties',
+    propertiesNotSatisfied: [
+      {
+        propertyName: 'reading_id',
+        details: [ { operatorName: 'pattern', specifiedAs: { pattern: '^READ-[0-9]{7}$' } } ]
+      },
+      {
+        propertyName: 'device_type',
+        details: [ { operatorName: 'enum', specifiedAs: { enum: [ 'WEARABLE_MONITOR', 'ECG_PATCH', 'GLUCOMETER', 'PULSE_OXIMETER' ] } } ]
+      },
+      {
+        propertyName: 'vitals',
+        details: [
+          {
+            operatorName: 'properties',
+            propertiesNotSatisfied: [
+              { propertyName: 'heart_rate', details: [ { operatorName: 'maximum', specifiedAs: { maximum: 240 } } ] },
+              { propertyName: 'systolic_bp', details: [ { operatorName: 'minimum', specifiedAs: { minimum: 50 } } ] },
+              { propertyName: 'spo2', details: [ { operatorName: 'maximum', specifiedAs: { maximum: 100 } } ] }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]
+
+4. Vysvětlení chování příkazu:
+Při vytváření kolekce bylo nastaveno 'validationLevel: "strict"' a 'validationAction: "error"'.
+MongoDB validační engine vyhodnotil vstupní dokument vůči deklarovaným JSON Schema pravidlům.
+Protože dokument porušil regex formát ID, povolený číselník zařízení i fyziologické intervaly,
+operace byla zamítnuta pod kódem 121 (DocumentValidationFailure).
+
+5. Interpretace výsledku:
+Test prokazuje absolutní ochranu databáze před chybnými či zkorumpovanými IoT vstupy.
+I kdyby v klientském zařízení došlo k chybě firmwaru nebo pokusu o podvržení dat, nevalidní
+záznam se do clusteru nedostane.
+
+
+--------------------------------------------------------------------------------
+-- Dotaz 15: Distribuovaná ACID transakce napříč shardy (Eskalace péče)
+--------------------------------------------------------------------------------
+1. Zadání v přirozeném jazyce:
+Proveďte atomickou multi-dokumentovou transakci napříč shardy: při záchytu kritického
+odečtu (READ-0009999) současně v jedné transakci zapište odečet do 'sensor_readings',
+změňte rizikovou kategorii pacienta v 'patients' na CRITICAL a vygenerujte urgentní žádanku
+v 'medical_interventions' s plnou zárukou atomicity a konzistence snapshot.
+
+2. Přesný příkaz (mongosh):
+use telemedicina;
+const session = db.getMongo().startSession();
+session.startTransaction({
+  readConcern: { level: "snapshot" },
+  writeConcern: { w: "majority" }
+});
+
+try {
+  const readingsColl = session.getDatabase("telemedicina").getCollection("sensor_readings");
+  const patientsColl = session.getDatabase("telemedicina").getCollection("patients");
+  const intervColl = session.getDatabase("telemedicina").getCollection("medical_interventions");
+
+  // 1. Zápis extrémní telemetrie
+  readingsColl.insertOne({
+    reading_id: "READ-0009999",
+    patient_id: "PAT-0002",
+    device_id: "DEV-ECG-1002",
+    device_type: "ECG_PATCH",
+    timestamp: new Date().toISOString(),
+    vitals: {
+      heart_rate: 195,
+      systolic_bp: 225,
+      diastolic_bp: 135,
+      spo2: 89.0,
+      blood_glucose: 6.8,
+      body_temp: 37.2
+    },
+    battery_level: 92,
+    firmware_version: "v3.0.1",
+    alert_triggered: true,
+    alert_type: "HYPERTENSIVE_CRISIS"
+  });
+
+  // 2. Eskalace rizikové kategorie v evidenci pacientů
+  patientsColl.updateOne(
+    { patient_id: "PAT-0002" },
+    { $set: { risk_category: "CRITICAL" } }
+  );
+
+  // 3. Automatické vystavení akutní žádanky o zásah
+  intervColl.insertOne({
+    intervention_id: "INT-00999",
+    patient_id: "PAT-0002",
+    doctor_id: "DOC-102",
+    timestamp: new Date().toISOString(),
+    trigger_type: "VITAL_ALERT",
+    severity: "CRITICAL",
+    notes: "Akutní eskalace péče: záchyt hypertenzní krize 225/135 a tachykardie 195 bpm.",
+    medication_change: {
+      prescribed_drug: "Urapidil",
+      dosage_mg: 25.0,
+      frequency: "i.v. statim"
+    },
+    hospitalization_required: true,
+    follow_up_days: 1
+  });
+
+  session.commitTransaction();
+  print(">>> DISTRIBUOVANÁ TRANSAKCE ÚSPĚŠNĚ POTVRZENA (COMMIT).");
+} catch (error) {
+  session.abortTransaction();
+  print(">>> TRANSAKCE SELHALA A BYLA VRÁCENA (ABORT): " + error.message);
+} finally {
+  session.endSession();
+}
+
+// Ověření atomické konzistence po potvrzení transakce
+const patCheck = db.patients.findOne({ patient_id: "PAT-0002" }, { patient_id: 1, risk_category: 1 });
+const intervCheck = db.medical_interventions.findOne({ intervention_id: "INT-00999" });
+printjson({ pacient: patCheck, intervence: intervCheck ? intervCheck.intervention_id : null });
+
+3. Očekávaný výstup z konzole:
+>>> DISTRIBUOVANÁ TRANSAKCE ÚSPĚŠNĚ POTVRZENA (COMMIT).
+{
+  pacient: {
+    _id: ObjectId('...'),
+    patient_id: 'PAT-0002',
+    risk_category: 'CRITICAL'
+  },
+  intervence: 'INT-00999'
+}
+
+4. Vysvětlení chování příkazu:
+Jde o to samé jako bankovní převod mezi účty: buď projdou úplně všechny tři zápisy (odečet +
+změna rizikové kategorie + žádanka), nebo neprojde ani jeden — nic mezi tím. MongoDB tohle hlídá
+sama přes `session.startTransaction()` / `commitTransaction()` / `abortTransaction()`. Protože
+zápisy míří do tří různých kolekcí (a tedy potenciálně na různé shardy), mongos interně koordinuje
+potvrzení mezi uzly (tzv. two-phase commit) — ale z pohledu toho, co píšu do kódu, se to chová
+úplně stejně jako transakce v obyčejné jednoserverové databázi, jen o kus pod kapotou.
+
+5. Interpretace výsledku:
+Nemůže nastat půl-hotová situace — třeba že se zapíše kritický odečet, ale pacient zůstane
+omylem v nekritické kategorii, protože druhý zápis selhal. Buď se stane celý "balíček" tří
+zápisů najednou, nebo se celý vrátí zpátky (`abortTransaction`) a nic se nezmění.

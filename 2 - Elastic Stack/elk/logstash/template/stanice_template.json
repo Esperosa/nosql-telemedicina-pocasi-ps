@@ -1,0 +1,53 @@
+{
+  "index_patterns": ["stanice*"],
+  "priority": 100,
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 1
+    },
+    "mappings": {
+      "properties": {
+        "station_id": {
+          "type": "keyword"
+        },
+        "station_name": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 256
+            }
+          }
+        },
+        "region": {
+          "type": "keyword"
+        },
+        "district": {
+          "type": "keyword"
+        },
+        "city": {
+          "type": "keyword"
+        },
+        "elevation": {
+          "type": "integer"
+        },
+        "latitude": {
+          "type": "float"
+        },
+        "longitude": {
+          "type": "float"
+        },
+        "location": {
+          "type": "geo_point"
+        },
+        "station_type": {
+          "type": "keyword"
+        },
+        "owner": {
+          "type": "keyword"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,798 @@
+================================================================================
+SEMSTRÁLNÍ PRÁCE: NoSQL databáze (NOSQL) — UHK
+2. část: Elastic Stack (Elasticsearch, Logstash, Kibana)
+Téma: Počasí a kvalita ovzduší v ČR (ČHMÚ data)
+SOUBOR DOTAZŮ: elk/queries/queries.txt
+================================================================================
+
+Tento soubor obsahuje 5 povinných dotazů v Elasticsearch Query DSL pokrývajících
+všechny požadované kategorie (filtr, třídění, wildcard, 2x pokročilý dotaz)
+a 1 dotaz v jazyce ES|QL podrobně porovnaný s jeho ekvivalentem v Query DSL.
+
+Všechny dotazy lze přímo zkopírovat a spustit v Kibana Dev Tools (Console)
+nebo odeslat přes nástroj curl.
+
+--------------------------------------------------------------------------------
+PŘEHLED DOTAZŮ:
+  Dotaz 1: [Filtr] Vyhledání měřicích stanic v Jihomoravském kraji
+  Dotaz 2: [Třídění] Výpis 10 nejvýše položených stanic seřazených dle nadmořské výšky
+  Dotaz 3: [Wildcard] Vyhledání všech stanic v aglomeraci Ostrava podle masky
+  Dotaz 4: [Pokročilý 1 - Range & Bool] Vyhledání smogových situací při teplotní inverzi
+  Dotaz 5: [Pokročilý 2 - Agregace] Měsíční statistická analýza PM2.5 a teploty
+  Dotaz 6: [ES|QL vs Query DSL] Srovnávací analýza znečištění podle typu stanice
+================================================================================
+
+
+################################################################################
+DOTAZ 1: [Filtr] Vyhledání měřicích stanic v Jihomoravském kraji
+################################################################################
+
+1. Zadání v přirozeném jazyce:
+Vyhledejte všechny měřicí stanice v indexu "stanice", které se nacházejí
+v Jihomoravském kraji. Zajímají nás identifikační údaje stanice, město a typ stanice.
+
+2. Přesný příkaz (Kibana Dev Tools / REST API):
+POST /stanice/_search
+{
+  "query": {
+    "term": {
+      "region": "Jihomoravský"
+    }
+  },
+  "_source": ["station_id", "station_name", "city", "station_type", "elevation"]
+}
+
+3. Ukázka výstupu z konzole:
+{
+  "took": 2,
+  "timed_out": false,
+  "_shards": {
+    "total": 1,
+    "successful": 1,
+    "skipped": 0,
+    "failed": 0
+  },
+  "hits": {
+    "total": {
+      "value": 4,
+      "relation": "eq"
+    },
+    "max_score": 1.0,
+    "hits": [
+      {
+        "_index": "stanice",
+        "_id": "BRN-ZVO",
+        "_score": 1.0,
+        "_source": {
+          "station_id": "BRN-ZVO",
+          "station_name": "Brno-Zvonařka",
+          "city": "Brno",
+          "station_type": "dopravní",
+          "elevation": 204
+        }
+      },
+      {
+        "_index": "stanice",
+        "_id": "BRN-KRO",
+        "_score": 1.0,
+        "_source": {
+          "station_id": "BRN-KRO",
+          "station_name": "Brno-Kroftova",
+          "city": "Brno",
+          "station_type": "městská pozaďová",
+          "elevation": 245
+        }
+      },
+      {
+        "_index": "stanice",
+        "_id": "BRN-LIZ",
+        "_score": 1.0,
+        "_source": {
+          "station_id": "BRN-LIZ",
+          "station_name": "Brno-Líšeň",
+          "city": "Brno",
+          "station_type": "předměstská",
+          "elevation": 310
+        }
+      },
+      {
+        "_index": "stanice",
+        "_id": "BRN-SVA",
+        "_score": 1.0,
+        "_source": {
+          "station_id": "BRN-SVA",
+          "station_name": "Brno-Svatoplukova",
+          "city": "Brno",
+          "station_type": "dopravní",
+          "elevation": 215
+        }
+      }
+    ]
+  }
+}
+
+4. Vysvětlení fungování:
+Dotaz používá konstrukci `term` na poli `region`, které je v mapování definováno
+jako typ `keyword`. Vyhledávání `term` provádí přesnou shodu (exact match) bez
+jazykové analýzy (tokenizace/stemmingu), což je ideální pro kategorické hodnoty,
+kódy a geografické entity. Parametr `_source` omezuje přenášená pole pouze na ta,
+která jsou relevantní pro klienta, čímž šetří síťovou propustnost.
+
+5. Interpretace výsledků:
+V Jihomoravském kraji byly nalezeny celkem 4 stanice: 2 dopravní (Zvonařka,
+Svatoplukova), 1 městská pozaďová (Kroftova) a 1 předměstská (Líšeň).
+Tato síť umožňuje sledovat jak přímý dopad městské dopravy, tak pozaďovou
+situaci v obytných čtvrtích Brna.
+
+
+################################################################################
+DOTAZ 2: [Třídění] Výpis 10 nejvýše položených stanic seřazených dle nadmořské výšky
+################################################################################
+
+1. Zadání v přirozeném jazyce:
+Vypište 10 nejvýše položených monitorovacích stanic v ČR, seřazených sestupně
+podle nadmořské výšky (od nejvyšší po nejnižší).
+
+2. Přesný příkaz (Kibana Dev Tools / REST API):
+POST /stanice/_search
+{
+  "query": {
+    "match_all": {}
+  },
+  "sort": [
+    {
+      "elevation": {
+        "order": "desc"
+      }
+    }
+  ],
+  "size": 10,
+  "_source": ["station_id", "station_name", "elevation", "region", "station_type"]
+}
+
+3. Ukázka výstupu z konzole:
+{
+  "took": 1,
+  "timed_out": false,
+  "_shards": {
+    "total": 1,
+    "successful": 1,
+    "skipped": 0,
+    "failed": 0
+  },
+  "hits": {
+    "total": {
+      "value": 40,
+      "relation": "eq"
+    },
+    "max_score": null,
+    "hits": [
+      {
+        "_index": "stanice",
+        "_id": "KRN-SER",
+        "_score": null,
+        "_source": {
+          "station_id": "KRN-SER",
+          "station_name": "Krkonoše-Šerlich",
+          "elevation": 1019,
+          "region": "Královéhradecký",
+          "station_type": "venkovská pozaďová"
+        },
+        "sort": [1019]
+      },
+      {
+        "_index": "stanice",
+        "_id": "JES-CER",
+        "_score": null,
+        "_source": {
+          "station_id": "JES-CER",
+          "station_name": "Jeseník-Červenohorské sedlo",
+          "elevation": 1013,
+          "region": "Olomoucký",
+          "station_type": "venkovská pozaďová"
+        },
+        "sort": [1013]
+      },
+      {
+        "_index": "stanice",
+        "_id": "JIH-TER",
+        "_score": null,
+        "_source": {
+          "station_id": "JIH-TER",
+          "station_name": "Jihlava-Terezie Brzkové",
+          "elevation": 520,
+          "region": "Kraj Vysočina",
+          "station_type": "městská pozaďová"
+        },
+        "sort": [520]
+      },
+      {
+        "_index": "stanice",
+        "_id": "PRI-KOV",
+        "_score": null,
+        "_source": {
+          "station_id": "PRI-KOV",
+          "station_name": "Příbram-Kovohutě",
+          "elevation": 470,
+          "region": "Středočeský",
+          "station_type": "průmyslová"
+        },
+        "sort": [470]
+      },
+      {
+        "_index": "stanice",
+        "_id": "LIB-SEV",
+        "_score": null,
+        "_source": {
+          "station_id": "LIB-SEV",
+          "station_name": "Liberec-Sever",
+          "elevation": 410,
+          "region": "Liberecký",
+          "station_type": "městská pozaďová"
+        },
+        "sort": [410]
+      }
+    ]
+  }
+}
+
+4. Vysvětlení fungování:
+Dotaz používá `match_all` pro výběr všech dokumentů a klauzuli `sort`, kde
+specifikuje číselné pole `elevation` a směr `desc`. Elasticsearch při explicitním
+třídění vypíná výpočet skóre relevance (`_score: null`), protože dokumenty jsou
+řazeny deterministicky podle hodnoty v indexu (Doc Values), což je vysoce
+optimalizovaná paměťová operace. Parametr `size: 10` omezuje stránkování.
+
+5. Interpretace výsledků:
+Nejvýše položenými stanicemi jsou horské stanice Krkonoše-Šerlich (1019 m n. m.)
+a Jeseník-Červenohorské sedlo (1013 m n. m.), které slouží jako referenční
+venkovské pozaďové body pro sledování dálkového přenosu znečišťujících látek.
+Následují stanice na Českomoravské vrchovině (Jihlava, 520 m) a v podhůří.
+
+
+################################################################################
+DOTAZ 3: [Wildcard] Vyhledání všech stanic v aglomeraci Ostrava podle masky
+################################################################################
+
+1. Zadání v přirozeném jazyce:
+Vyhledejte všechny stanice, jejichž název stanice obsahuje slovo "Ostrava"
+v libovolné pozici názvu, nebo jejich kód začíná předponou "OST-".
+
+2. Přesný příkaz (Kibana Dev Tools / REST API):
+POST /stanice/_search
+{
+  "query": {
+    "bool": {
+      "should": [
+        {
+          "wildcard": {
+            "station_name.keyword": {
+              "value": "*Ostrava*",
+              "case_insensitive": true
+            }
+          }
+        },
+        {
+          "prefix": {
+            "station_id": "OST-"
+          }
+        }
+      ],
+      "minimum_should_match": 1
+    }
+  },
+  "_source": ["station_id", "station_name", "district", "station_type", "elevation"]
+}
+
+3. Ukázka výstupu z konzole:
+{
+  "took": 3,
+  "timed_out": false,
+  "_shards": {
+    "total": 1,
+    "successful": 1,
+    "skipped": 0,
+    "failed": 0
+  },
+  "hits": {
+    "total": {
+      "value": 4,
+      "relation": "eq"
+    },
+    "max_score": 1.0,
+    "hits": [
+      {
+        "_index": "stanice",
+        "_id": "OST-FIF",
+        "_score": 1.0,
+        "_source": {
+          "station_id": "OST-FIF",
+          "station_name": "Ostrava-Fifejdy",
+          "district": "Ostrava-město",
+          "station_type": "městská pozaďová",
+          "elevation": 220
+        }
+      },
+      {
+        "_index": "stanice",
+        "_id": "OST-RAD",
+        "_score": 1.0,
+        "_source": {
+          "station_id": "OST-RAD",
+          "station_name": "Ostrava-Radvanice",
+          "district": "Ostrava-město",
+          "station_type": "průmyslová",
+          "elevation": 248
+        }
+      },
+      {
+        "_index": "stanice",
+        "_id": "OST-POR",
+        "_score": 1.0,
+        "_source": {
+          "station_id": "OST-POR",
+          "station_name": "Ostrava-Poruba",
+          "district": "Ostrava-město",
+          "station_type": "městská pozaďová",
+          "elevation": 240
+        }
+      },
+      {
+        "_index": "stanice",
+        "_id": "OST-PRI",
+        "_score": 1.0,
+        "_source": {
+          "station_id": "OST-PRI",
+          "station_name": "Ostrava-Přívoz",
+          "district": "Ostrava-město",
+          "station_type": "průmyslová",
+          "elevation": 208
+        }
+      }
+    ]
+  }
+}
+
+4. Vysvětlení fungování:
+Dotaz kombinuje logický operátor `bool` se sekcí `should`.
+První podmínka využívá `wildcard` operátor na poli `station_name.keyword` se vzorem
+`*Ostrava*`, který prochází invertovaný index pro hledání řetězců odpovídajících
+zástupným znakům (`*` pro libovolný počet znaků). Přepínač `case_insensitive: true`
+zajišťuje nezávislost na velikosti písmen. Druhá podmínka využívá `prefix` na poli
+`station_id` (kódy stanic začínající na `OST-`).
+
+5. Interpretace výsledků:
+Byly nalezeny 4 monitorovací lokality v Ostravě: Ostrava-Fifejdy, Radvanice,
+Poruba a Přívoz. Dvě z nich jsou klasifikovány jako průmyslové stanice vystavené
+emisím z těžkého průmyslu a hutnictví, dvě jako městské pozaďové v hustě
+osídlených čtvrtích.
+
+
+################################################################################
+DOTAZ 4: [Pokročilý 1 - Range & Bool] Vyhledání smogových situací při teplotní inverzi
+################################################################################
+
+1. Zadání v přirozeném jazyce:
+Vyhledejte všechna měření kvality ovzduší z obou let (index `kvalita_ovzdusi*`),
+kde nastala nebezpečná situace: koncentrace polétavého prachu PM10 překročila
+100 µg/m³ (dvojnásobek zákonného 24h imisního limitu), současně bylo aktivní
+smogové varování ("upozorneni" nebo "regulace") a index AQI byl 5 nebo 6.
+Výsledky seřaďte sestupně podle koncentrace PM10.
+
+2. Přesný příkaz (Kibana Dev Tools / REST API):
+POST /kvalita_ovzdusi*/_search
+{
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "range": {
+            "pm10": {
+              "gte": 100.0
+            }
+          }
+        },
+        {
+          "terms": {
+            "smog_warning": ["upozorneni", "regulace"]
+          }
+        },
+        {
+          "range": {
+            "aqi_index": {
+              "gte": 5
+            }
+          }
+        }
+      ]
+    }
+  },
+  "sort": [
+    {
+      "pm10": {
+        "order": "desc"
+      }
+    }
+  ],
+  "size": 5,
+  "_source": ["measurement_id", "station_id", "timestamp", "pm10", "pm2_5", "no2", "aqi_index", "smog_warning"]
+}
+
+3. Ukázka výstupu z konzole:
+{
+  "took": 5,
+  "timed_out": false,
+  "_shards": {
+    "total": 2,
+    "successful": 2,
+    "skipped": 0,
+    "failed": 0
+  },
+  "hits": {
+    "total": {
+      "value": 118,
+      "relation": "eq"
+    },
+    "max_score": null,
+    "hits": [
+      {
+        "_index": "kvalita_ovzdusi-2023",
+        "_id": "AQ-2023-004128",
+        "_score": null,
+        "_source": {
+          "measurement_id": "AQ-2023-004128",
+          "station_id": "OST-RAD",
+          "timestamp": "2023-01-18T06:00:00Z",
+          "pm10": 178.4,
+          "pm2_5": 132.1,
+          "no2": 78.5,
+          "aqi_index": 6,
+          "smog_warning": "regulace"
+        },
+        "sort": [178.4]
+      },
+      {
+        "_index": "kvalita_ovzdusi-2024",
+        "_id": "AQ-2024-001095",
+        "_score": null,
+        "_source": {
+          "measurement_id": "AQ-2024-001095",
+          "station_id": "KAR-KOS",
+          "timestamp": "2024-02-04T07:00:00Z",
+          "pm10": 164.2,
+          "pm2_5": 119.8,
+          "no2": 69.3,
+          "aqi_index": 6,
+          "smog_warning": "regulace"
+        },
+        "sort": [164.2]
+      },
+      {
+        "_index": "kvalita_ovzdusi-2023",
+        "_id": "AQ-2023-002750",
+        "_score": null,
+        "_source": {
+          "measurement_id": "AQ-2023-002750",
+          "station_id": "TRIN-KO",
+          "timestamp": "2023-12-14T19:00:00Z",
+          "pm10": 152.0,
+          "pm2_5": 108.4,
+          "no2": 74.2,
+          "aqi_index": 6,
+          "smog_warning": "regulace"
+        },
+        "sort": [152.0]
+      }
+    ]
+  }
+}
+
+4. Vysvětlení fungování:
+Dotaz vyhledává napříč více indexy současně pomocí masky `kvalita_ovzdusi*`
+(pokrývá soubory pro rok 2023 i 2024). Podmínky jsou uzavřeny v klauzuli
+`bool.filter`, což znamená, že se nepočítá relevance skóre a dotazy jsou
+automaticky ukládány do filter cache Elasticsearch. Jsou aplikovány dva numerické
+range filtry (`pm10 >= 100.0`, `aqi_index >= 5`) a množinový filtr `terms` pro stav
+smogového hlášení.
+
+5. Interpretace výsledků:
+V datech za roky 2023 a 2024 bylo identifikováno celkem 118 případů závažných
+smogových epizod. Nejvyšší naměřené extrémy (přes 170 µg/m³ PM10) nastávají v zimních
+měsících (leden, únor, prosinec) v ranních a večerních hodinách na průmyslových
+stanicích Moravskoslezského kraje (Ostrava-Radvanice, Karviná, Třinec). V těchto
+případech dosahuje podíl jemných respirabilních částic PM2.5 až 75 % celkové hmotnosti
+prachu PM10.
+
+
+################################################################################
+DOTAZ 5: [Pokročilý 2 - Agregace] Měsíční statistická analýza PM2.5 a teploty
+################################################################################
+
+1. Zadání v přirozeném jazyce:
+Proveďte časovou agregaci měření kvality ovzduší v roce 2024 po kalendářních
+měsících. Pro každý měsíc spočítejte souhrnné statistické ukazatele (počet, průměr,
+minimum, maximum a směrodatnou odchylku) pro koncentraci polétavého prachu PM2.5
+a průměrný index kvality ovzduší AQI.
+
+2. Přesný příkaz (Kibana Dev Tools / REST API):
+POST /kvalita_ovzdusi-2024/_search
+{
+  "size": 0,
+  "aggs": {
+    "mereni_po_mesicich": {
+      "date_histogram": {
+        "field": "@timestamp",
+        "calendar_interval": "month",
+        "format": "yyyy-MM"
+      },
+      "aggs": {
+        "statistika_pm25": {
+          "extended_stats": {
+            "field": "pm2_5"
+          }
+        },
+        "prumerny_aqi": {
+          "avg": {
+            "field": "aqi_index"
+          }
+        }
+      }
+    }
+  }
+}
+
+3. Ukázka výstupu z konzole:
+{
+  "took": 8,
+  "timed_out": false,
+  "_shards": {
+    "total": 1,
+    "successful": 1,
+    "skipped": 0,
+    "failed": 0
+  },
+  "hits": {
+    "total": {
+      "value": 6000,
+      "relation": "eq"
+    },
+    "max_score": null,
+    "hits": []
+  },
+  "aggregations": {
+    "mereni_po_mesicich": {
+      "buckets": [
+        {
+          "key_as_string": "2024-01",
+          "key": 1704067200000,
+          "doc_count": 512,
+          "statistika_pm25": {
+            "count": 512,
+            "min": 8.2,
+            "max": 128.5,
+            "avg": 34.62,
+            "sum": 17725.44,
+            "sum_of_squares": 782140.2,
+            "variance": 328.45,
+            "variance_population": 328.45,
+            "variance_sampling": 329.09,
+            "std_deviation": 18.12,
+            "std_deviation_population": 18.12,
+            "std_deviation_sampling": 18.14
+          },
+          "prumerny_aqi": {
+            "value": 3.42
+          }
+        },
+        {
+          "key_as_string": "2024-07",
+          "key": 1719792000000,
+          "doc_count": 524,
+          "statistika_pm25": {
+            "count": 524,
+            "min": 2.1,
+            "max": 28.4,
+            "avg": 11.85,
+            "sum": 6209.4,
+            "sum_of_squares": 98450.1,
+            "variance": 47.32,
+            "variance_population": 47.32,
+            "variance_sampling": 47.41,
+            "std_deviation": 6.88,
+            "std_deviation_population": 6.88,
+            "std_deviation_sampling": 6.89
+          },
+          "prumerny_aqi": {
+            "value": 1.68
+          }
+        }
+      ]
+    }
+  }
+}
+
+4. Vysvětlení fungování:
+Nastavení `size: 0` potlačuje vrácení konkrétních dokumentů, takže odpověď
+obsahuje výhradně vypočtené agregace. Kořenová agregace `date_histogram` seskupuje
+časové značky do bucketů podle kalendářních měsíců (`calendar_interval: "month"`).
+Pro každý vzniklý časový bucket se spouští dvě vnořené sub-agregace:
+`extended_stats` počítá kompletní sadu popisných momentů (průměr, rozptyl, směrodatná
+odchylka, min, max) a `avg` počítá průměrný index znečištění.
+
+5. Interpretace výsledků:
+Agregace prokazuje výraznou sezónnost kvality ovzduší v ČR:
+- V lednu (topná sezóna, časté teplotní inverze) je průměrná koncentrace PM2.5
+  trojnásobná (34.6 µg/m³) oproti červenci (11.8 µg/m³), s vysokou směrodatnou
+  odchylkou (18.12) indikující časté extrémní výkyvy.
+- V letním období (červenec) je rozptyl hodnot nízký a průměrný index AQI
+  dosahuje hodnoty 1.68 (velmi dobrá až dobrá kvalita).
+
+
+################################################################################
+DOTAZ 6: [ES|QL vs Query DSL] Srovnávací analýza znečištění podle typu stanice
+################################################################################
+
+1. Zadání v přirozeném jazyce:
+Z obou let měření kvality ovzduší (`kvalita_ovzdusi*`) vyberte pouze záznamy
+se zhoršenou až velmi špatnou kvalitou ovzduší (index AQI >= 4). Seskupte je
+podle typu stanice a spočítejte pro každý typ stanice:
+- celkový počet takových měření,
+- průměrnou koncentraci PM10,
+- průměrnou koncentraci PM2.5,
+- průměrnou koncentraci NO2.
+Výsledky seřaďte sestupně podle průměrné koncentrace PM10.
+
+--------------------------------------------------------------------------------
+A) Varianta v novém dotazovacím jazyce ES|QL (Elasticsearch Query Language):
+--------------------------------------------------------------------------------
+POST /_query
+{
+  "query": """
+    FROM kvalita_ovzdusi*
+    | WHERE aqi_index >= 4
+    | STATS pocet_mereni = COUNT(),
+            prumer_pm10 = AVG(pm10),
+            prumer_pm25 = AVG(pm2_5),
+            prumer_no2 = AVG(no2)
+      BY station_type
+    | SORT prumer_pm10 DESC
+  """
+}
+
+Ukázka výstupu ES|QL:
+{
+  "columns": [
+    {"name": "station_type", "type": "keyword"},
+    {"name": "pocet_mereni", "type": "long"},
+    {"name": "prumer_pm10", "type": "double"},
+    {"name": "prumer_pm25", "type": "double"},
+    {"name": "prumer_no2", "type": "double"}
+  ],
+  "values": [
+    ["průmyslová", 482, 92.45, 68.12, 54.30],
+    ["dopravní", 315, 84.18, 59.40, 68.75],
+    ["městská pozaďová", 210, 76.80, 52.15, 38.60],
+    ["venkovská pozaďová", 18, 71.20, 48.90, 16.40]
+  ]
+}
+
+--------------------------------------------------------------------------------
+B) Ekvivalentní varianta v tradičním Query DSL:
+--------------------------------------------------------------------------------
+POST /kvalita_ovzdusi*/_search
+{
+  "size": 0,
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "range": {
+            "aqi_index": {
+              "gte": 4
+            }
+          }
+        }
+      ]
+    }
+  },
+  "aggs": {
+    "podle_typu_stanice": {
+      "terms": {
+        "field": "station_type.keyword",
+        "order": {
+          "prumer_pm10": "desc"
+        }
+      },
+      "aggs": {
+        "prumer_pm10": {
+          "avg": {
+            "field": "pm10"
+          }
+        },
+        "prumer_pm25": {
+          "avg": {
+            "field": "pm2_5"
+          }
+        },
+        "prumer_no2": {
+          "avg": {
+            "field": "no2"
+          }
+        }
+      }
+    }
+  }
+}
+
+Ukázka výstupu Query DSL:
+{
+  "took": 4,
+  "timed_out": false,
+  "hits": {"total": {"value": 1025, "relation": "eq"}, "hits": []},
+  "aggregations": {
+    "podle_typu_stanice": {
+      "buckets": [
+        {
+          "key": "průmyslová",
+          "doc_count": 482,
+          "prumer_pm10": {"value": 92.45},
+          "prumer_pm25": {"value": 68.12},
+          "prumer_no2": {"value": 54.30}
+        },
+        {
+          "key": "dopravní",
+          "doc_count": 315,
+          "prumer_pm10": {"value": 84.18},
+          "prumer_pm25": {"value": 59.40},
+          "prumer_no2": {"value": 68.75}
+        },
+        {
+          "key": "městská pozaďová",
+          "doc_count": 210,
+          "prumer_pm10": {"value": 76.80},
+          "prumer_pm25": {"value": 52.15},
+          "prumer_no2": {"value": 38.60}
+        },
+        {
+          "key": "venkovská pozaďová",
+          "doc_count": 18,
+          "prumer_pm10": {"value": 71.20},
+          "prumer_pm25": {"value": 48.90},
+          "prumer_no2": {"value": 16.40}
+        }
+      ]
+    }
+  }
+}
+
+--------------------------------------------------------------------------------
+C) Podrobné porovnání ES|QL vs. Query DSL:
+--------------------------------------------------------------------------------
+
+1. Syntaxe a čitelnost:
+   - ES|QL používá lineární sekvenční pipeline oddělenou znakem svislítka `|`
+     (obdoba UNIX pipe nebo SQL dotazu), což odpovídá přirozenému myšlenkovému toku:
+     vezmi index -> zfiltruj -> spočítej statistiky -> seřaď. Dotaz má pouze 7 řádků.
+   - Query DSL vyžaduje hluboce zanořený stromový JSON formát s klíči `query`,
+     `bool`, `filter`, `range`, `aggs`, `terms` a vnořenými sub-agregacemi.
+     Dotaz má 38 řádků a je náchylnější k syntaktickým chybám v závorkách.
+
+2. Formát výstupních dat:
+   - ES|QL vrací kompaktní tabulkovou strukturu (`columns` a `values`), která je
+     okamžitě připravena pro vykreslení do tabulky nebo převod do Pandas DataFrame.
+   - Query DSL vrací hluboce vnořenou stromovou strukturu (`aggregations ->
+     podle_typu_stanice -> buckets -> prumer_pm10 -> value`), kterou musí klientská
+     aplikace manuálně procházet a parsovat.
+
+3. Řazení podle agregované metriky:
+   - V ES|QL stačí jednoduše přidat klauzuli `| SORT prumer_pm10 DESC`.
+   - V Query DSL je nutné uvnitř klauzule `terms` explicitně definovat objekt
+     `order: { "prumer_pm10": "desc" }`, který odkazuje na název vnořené sub-agregace.
+
+4. Kdy se co hodí:
+   - ES|QL je čitelnější a rychlejší na napsání pro jednoduché analytické dotazy
+     typu "seskup, spočítej, seřaď" - syntaxe čteš shora dolů jako krok za krokem.
+   - Query DSL zůstává potřeba pro věci, co ES|QL (zatím) neumí: plnotextové
+     vyhledávání s relevance scoringem, geo-dotazy, percolator a hodně
+     specifické vnořené agregace.
+================================================================================

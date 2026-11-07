@@ -1,0 +1,48 @@
+{
+  "index_patterns": ["meteo_mereni*"],
+  "priority": 100,
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 1
+    },
+    "mappings": {
+      "properties": {
+        "measurement_id": {
+          "type": "keyword"
+        },
+        "station_id": {
+          "type": "keyword"
+        },
+        "timestamp": {
+          "type": "date",
+          "format": "strict_date_time||iso8601"
+        },
+        "@timestamp": {
+          "type": "date"
+        },
+        "temperature": {
+          "type": "float"
+        },
+        "relative_humidity": {
+          "type": "float"
+        },
+        "pressure": {
+          "type": "float"
+        },
+        "wind_speed": {
+          "type": "float"
+        },
+        "wind_direction": {
+          "type": "integer"
+        },
+        "precipitation": {
+          "type": "float"
+        },
+        "weather_condition": {
+          "type": "keyword"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,21 @@
+station_id,station_name,region,district,city,elevation,latitude,longitude,station_type,owner
+BRN-ZVO,Brno-Zvonařka,Jihomoravský,Brno-město,Brno,204,49.1869,16.6174,dopravní,ČHMÚ
+BRN-KRO,Brno-Kroftova,Jihomoravský,Brno-město,Brno,245,49.2155,16.5786,městská pozaďová,ČHMÚ
+BRN-LIZ,Brno-Líšeň,Jihomoravský,Brno-město,Brno,310,49.2081,16.6912,předměstská,ČHMÚ
+BRN-SVA,Brno-Svatoplukova,Jihomoravský,Brno-město,Brno,215,49.2052,16.6433,dopravní,ČHMÚ
+OST-FIF,Ostrava-Fifejdy,Moravskoslezský,Ostrava-město,Ostrava,220,49.8353,18.2689,městská pozaďová,ČHMÚ
+OST-RAD,Ostrava-Radvanice,Moravskoslezský,Ostrava-město,Ostrava,248,49.8164,18.3241,průmyslová,ČHMÚ
+OST-POR,Ostrava-Poruba,Moravskoslezský,Ostrava-město,Ostrava,240,49.8271,18.1633,městská pozaďová,ČHMÚ
+OST-PRI,Ostrava-Přívoz,Moravskoslezský,Ostrava-město,Ostrava,208,49.8562,18.2711,průmyslová,ČHMÚ
+KAR-KOS,Karviná-město,Moravskoslezský,Karviná,Karviná,230,49.855,18.5412,průmyslová,ČHMÚ
+HAV-ZEL,Havířov-střed,Moravskoslezský,Karviná,Havířov,260,49.7794,18.4382,městská pozaďová,ČHMÚ
+TRIN-KO,Třinec-Kosmos,Moravskoslezský,Frýdek-Místek,Třinec,310,49.6753,18.6697,průmyslová,ČHMÚ
+FM-MIST,Frýdek-Místek,Moravskoslezský,Frýdek-Místek,Frýdek-Místek,290,49.6833,18.3512,městská pozaďová,ČHMÚ
+OLO-HEJ,Olomouc-Hejčín,Olomoucký,Olomouc,Olomouc,215,49.6022,17.2425,městská pozaďová,ČHMÚ
+OLO-VEL,Olomouc-Velkomoravská,Olomoucký,Olomouc,Olomouc,212,49.5843,17.2612,dopravní,ČHMÚ
+PRER-SE,Přerov-Velká Dlážka,Olomoucký,Přerov,Přerov,210,49.4608,17.4489,městská pozaďová,ČHMÚ
+PROS-SI,Prostějov-Sídliště,Olomoucký,Prostějov,Prostějov,225,49.4715,17.1154,městská pozaďová,ČHMÚ
+ZLI-KVT,Zlín-Kúty,Zlínský,Zlín,Zlín,235,49.2286,17.6791,městská pozaďová,ČHMÚ
+UHE-HRD,Uherské Hradiště,Zlínský,Uherské Hradiště,Uherské Hradiště,180,49.0713,17.4611,městská pozaďová,ČHMÚ
+JIH-TER,Jihlava-Terezie Brzkové,Kraj Vysočina,Jihlava,Jihlava,520,49.3961,15.5802,městská pozaďová,ČHMÚ
+JES-CER,Jeseník-Červenohorské sedlo,Olomoucký,Jeseník,Loučná nad Desnou,1013,50.1244,17.1539,venkovská pozaďová,ČHMÚ

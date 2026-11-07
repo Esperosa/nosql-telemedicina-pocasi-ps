@@ -1,0 +1,179 @@
+name: chmu-elastic-stack
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. ELASTICSEARCH — Databázový a analytický uzel (Single Node)
+  # ----------------------------------------------------------------------------
+  elasticsearch:
+    image: ${ELASTICSEARCH_IMAGE:-docker.elastic.co/elasticsearch/elasticsearch:9.5.2}
+    container_name: elasticsearch
+    environment:
+      - node.name=elasticsearch
+      - cluster.name=chmu-cluster
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    ports:
+      - "${ES_PORT:-9200}:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+      - ./elk/elasticsearch/config/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
+    networks:
+      - elk_network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -f -u elastic:$${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health | grep -q -E '(\"status\":\"green\"|\"status\":\"yellow\")'"]
+      interval: 10s
+      timeout: 10s
+      retries: 25
+      start_period: 30s
+
+  # ----------------------------------------------------------------------------
+  # 2. SETUP — Jednorázová inicializace uživatelů, rolí a index templates
+  # ----------------------------------------------------------------------------
+  setup:
+    image: ${ELASTICSEARCH_IMAGE:-docker.elastic.co/elasticsearch/elasticsearch:9.5.2}
+    container_name: setup
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - KIBANA_SYSTEM_PASSWORD=${KIBANA_SYSTEM_PASSWORD}
+      - LOGSTASH_INTERNAL_PASSWORD=${LOGSTASH_INTERNAL_PASSWORD}
+    volumes:
+      - ./elk/setup:/setup:ro
+      - ./elk/logstash/template:/templates:ro
+    entrypoint: ["/bin/bash", "/setup/setup.sh"]
+    networks:
+      - elk_network
+
+  # ----------------------------------------------------------------------------
+  # 3. KIBANA — Webové vizualizační a analytické rozhraní
+  # ----------------------------------------------------------------------------
+  kibana:
+    image: ${KIBANA_IMAGE:-docker.elastic.co/kibana/kibana:9.5.2}
+    container_name: kibana
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
+    environment:
+      - SERVER_NAME=kibana
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_SYSTEM_PASSWORD}
+      - XPACK_SECURITY_ENABLED=true
+      - XPACK_SECURITY_ENCRYPTIONKEY=${XPACK_SECURITY_ENCRYPTIONKEY}
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=${XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY}
+      - XPACK_REPORTING_ENCRYPTIONKEY=${XPACK_REPORTING_ENCRYPTIONKEY}
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    ports:
+      - "${KIBANA_PORT:-5601}:5601"
+    volumes:
+      - kibana_data:/usr/share/kibana/data
+      - ./elk/kibana/config/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
+    networks:
+      - elk_network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -I http://localhost:5601/api/status | grep -q -E 'HTTP/1\\.[01] (200|302)'"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 40s
+
+  # ----------------------------------------------------------------------------
+  # 4. KIBANA-IMPORT — Automatický import dashboardu a 8 vizualizací
+  # ----------------------------------------------------------------------------
+  kibana-import:
+    image: ${ELASTICSEARCH_IMAGE:-docker.elastic.co/elasticsearch/elasticsearch:9.5.2}
+    container_name: kibana-import
+    depends_on:
+      kibana:
+        condition: service_healthy
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+    volumes:
+      - ./elk/setup:/setup:ro
+      - ./results:/results:ro
+    entrypoint: ["/bin/bash", "/setup/import_dashboard.sh"]
+    networks:
+      - elk_network
+
+  # ----------------------------------------------------------------------------
+  # 5. LOGSTASH — Paralelní ETL pipeline pro ingest 6 CSV souborů
+  # ----------------------------------------------------------------------------
+  logstash:
+    image: ${LOGSTASH_IMAGE:-docker.elastic.co/logstash/logstash:9.5.2}
+    container_name: logstash
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
+    environment:
+      - LS_JAVA_OPTS=-Xms512m -Xmx512m
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - LOGSTASH_INTERNAL_PASSWORD=${LOGSTASH_INTERNAL_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    volumes:
+      # POZOR: /usr/share/logstash/data je VLASTNÍ zapisovatelný pracovní
+      # adresář Logstash (plugin stav atd.) - nesmí se přes něj :ro přemountovat
+      # vstupní CSV data, jinak Logstash při startu spadne na "must be a
+      # writable directory". Vstupní data jsou proto na samostatné cestě.
+      - ./data:/usr/share/logstash/input-data:ro
+      - ./elk/logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ./elk/logstash/config/pipelines.yml:/usr/share/logstash/config/pipelines.yml:ro
+      - ./elk/logstash/pipeline:/usr/share/logstash/pipeline:ro
+    networks:
+      - elk_network
+
+  # ----------------------------------------------------------------------------
+  # 6. CHECK — Kontrolní diagnostický skript
+  #    Spuštění: docker compose run --rm check
+  # ----------------------------------------------------------------------------
+  check:
+    image: ${ELASTICSEARCH_IMAGE:-docker.elastic.co/elasticsearch/elasticsearch:9.5.2}
+    container_name: check
+    profiles:
+      - tools
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - LOGSTASH_INTERNAL_PASSWORD=${LOGSTASH_INTERNAL_PASSWORD}
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["/bin/bash", "/scripts/check.sh"]
+    networks:
+      - elk_network
+
+volumes:
+  es_data:
+    name: chmu_es_data
+  kibana_data:
+    name: chmu_kibana_data
+
+networks:
+  elk_network:
+    name: chmu_elk_network
+    driver: bridge

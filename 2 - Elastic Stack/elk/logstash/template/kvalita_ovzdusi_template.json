@@ -1,0 +1,48 @@
+{
+  "index_patterns": ["kvalita_ovzdusi*"],
+  "priority": 100,
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 1
+    },
+    "mappings": {
+      "properties": {
+        "measurement_id": {
+          "type": "keyword"
+        },
+        "station_id": {
+          "type": "keyword"
+        },
+        "timestamp": {
+          "type": "date",
+          "format": "strict_date_time||iso8601"
+        },
+        "@timestamp": {
+          "type": "date"
+        },
+        "pm10": {
+          "type": "float"
+        },
+        "pm2_5": {
+          "type": "float"
+        },
+        "no2": {
+          "type": "float"
+        },
+        "so2": {
+          "type": "float"
+        },
+        "o3": {
+          "type": "float"
+        },
+        "aqi_index": {
+          "type": "integer"
+        },
+        "smog_warning": {
+          "type": "keyword"
+        }
+      }
+    }
+  }
+}

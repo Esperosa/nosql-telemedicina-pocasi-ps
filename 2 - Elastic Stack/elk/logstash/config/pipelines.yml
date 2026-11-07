@@ -1,0 +1,17 @@
+- pipeline.id: stanice_cechy
+  path.config: "/usr/share/logstash/pipeline/01_stanice_cechy.conf"
+
+- pipeline.id: stanice_morava
+  path.config: "/usr/share/logstash/pipeline/02_stanice_morava.conf"
+
+- pipeline.id: meteo_2023
+  path.config: "/usr/share/logstash/pipeline/03_meteo_2023.conf"
+
+- pipeline.id: meteo_2024
+  path.config: "/usr/share/logstash/pipeline/04_meteo_2024.conf"
+
+- pipeline.id: kvalita_2023
+  path.config: "/usr/share/logstash/pipeline/05_kvalita_2023.conf"
+
+- pipeline.id: kvalita_2024
+  path.config: "/usr/share/logstash/pipeline/06_kvalita_2024.conf"

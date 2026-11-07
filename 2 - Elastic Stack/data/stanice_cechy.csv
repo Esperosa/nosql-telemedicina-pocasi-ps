@@ -1,0 +1,21 @@
+station_id,station_name,region,district,city,elevation,latitude,longitude,station_type,owner
+PHA-LIB,Praha 8-Libeň,Hlavní město Praha,Praha,Praha,195,50.1064,14.4756,městská pozaďová,ČHMÚ
+PHA-SMO,Praha 5-Smíchov,Hlavní město Praha,Praha,Praha,205,50.0712,14.4047,dopravní,ČHMÚ
+PHA-KOB,Praha 8-Kobylisy,Hlavní město Praha,Praha,Praha,280,50.1258,14.4533,městská pozaďová,ČHMÚ
+PHA-REP,Praha 6-Řepy,Hlavní město Praha,Praha,Praha,360,50.0655,14.2989,předměstská,ČHMÚ
+HK-SAL,Hradec Králové-Sukovy sady,Královéhradecký,Hradec Králové,Hradec Králové,235,50.2104,15.8252,městská pozaďová,ČHMÚ
+HK-TRE,Hradec Králové-Třebeš,Královéhradecký,Hradec Králové,Hradec Králové,240,50.1856,15.8341,předměstská,ČHMÚ
+PCE-POL,Pardubice-Polabiny,Pardubický,Pardubice,Pardubice,218,50.0461,15.7602,městská pozaďová,ČHMÚ
+PCE-DUK,Pardubice-Dukla,Pardubický,Pardubice,Pardubice,222,50.0253,15.7658,dopravní,ČHMÚ
+PLZ-SLO,Plzeň-Slovany,Plzeňský,Plzeň-město,Plzeň,326,49.7342,13.3986,městská pozaďová,ČHMÚ
+PLZ-KRH,Plzeň-Koterovská,Plzeňský,Plzeň-město,Plzeň,335,49.7301,13.4112,dopravní,ČHMÚ
+UST-MES,Ústí nad Labem-město,Ústecký,Ústí nad Labem,Ústí nad Labem,150,50.6607,14.0322,průmyslová,ČHMÚ
+UST-VSE,Ústí nad Labem-Všebořice,Ústecký,Ústí nad Labem,Ústí nad Labem,280,50.6841,13.9984,městská pozaďová,ČHMÚ
+LIB-VRA,Liberec-Vratislavice,Liberecký,Liberec,Liberec,380,50.7423,15.0901,městská pozaďová,ČHMÚ
+LIB-SEV,Liberec-Sever,Liberecký,Liberec,Liberec,410,50.7812,15.0534,městská pozaďová,ČHMÚ
+CB-ANT,České Budějovice-Antala Staška,Jihočeský,České Budějovice,České Budějovice,395,48.9744,14.4697,městská pozaďová,ČHMÚ
+CB-ROZ,České Budějovice-Rooseveltova,Jihočeský,České Budějovice,České Budějovice,392,48.9665,14.4821,dopravní,ČHMÚ
+KV-CER,Karlovy Vary-Čankovská,Karlovarský,Karlovy Vary,Karlovy Vary,385,50.2372,12.8622,městská pozaďová,ČHMÚ
+KLA-SIT,Kladno-Švermov,Středočeský,Kladno,Kladno,315,50.1658,14.1084,městská pozaďová,ČHMÚ
+PRI-KOV,Příbram-Kovohutě,Středočeský,Příbram,Příbram,470,49.6892,14.0103,průmyslová,ČHMÚ
+KRN-SER,Krkonoše-Šerlich,Královéhradecký,Rychnov nad Kněžnou,Deštné v Orlických horách,1019,50.3283,16.3811,venkovská pozaďová,ČHMÚ
